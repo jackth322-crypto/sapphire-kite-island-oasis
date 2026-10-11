@@ -8,6 +8,7 @@ import {
   rollHabits,
   styleName,
   teamColor,
+  teamGrades,
   teamShape,
   type GoalieCard,
   type Matchup,
@@ -20,7 +21,7 @@ import {
 type SideName = "home" | "away";
 type Slot = { side: SideName; index: number };
 
-const SLOT_NAMES = ["Attack", "Mid", "Defense", "Goalie", "Sub", "Sub", "Sub"];
+const SLOT_NAMES = ["Attack", "Mid", "Defense", "Goalie", "Sub 1", "Sub 2", "Sub 3"];
 
 const SHORT_PERK: Record<Perk, string> = {
   bank: "Bank",
@@ -180,7 +181,8 @@ function SidePanel({
   onClear: (index: number) => void;
 }) {
   const cards = rows.filter((c): c is PlayerCard => !!c);
-  const shape = useMemo(() => teamShape(cards), [cards]);
+  const shape = useMemo(() => teamShape(rows), [rows]);
+  const grades = useMemo(() => teamGrades(rows), [rows]);
   const sideName = title === "Home" ? "home" : "away";
   return (
     <section className="flex min-h-0 flex-col rounded-2xl border border-white/10 bg-[#0c1424] p-3 lg:overflow-y-auto">
@@ -190,13 +192,24 @@ function SidePanel({
         </h2>
         <p className="text-sm text-[#d5e8ff]">{styleName(shape, habits)}</p>
       </div>
+      <div className="mb-2 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-semibold tracking-[0.16em] text-[#8fb0c8]">TEAM</p>
+          <p className="text-2xl font-black leading-none text-[#ffe36b]">{cards.length ? grades.overall : "–"}</p>
+        </div>
+        <div className="grid flex-1 grid-cols-3 gap-2">
+          <Meter label="Off" value={grades.offense} />
+          <Meter label="Def" value={grades.defense} />
+          <Meter label="IQ" value={grades.iq} />
+        </div>
+      </div>
+      <p className="mb-2 text-xs text-[#9eb6cc]">{habitLine(habits)}</p>
       <div className="mb-2 grid grid-cols-4 gap-2">
         <Meter label="Push" value={shape.push} />
         <Meter label="Share" value={shape.share} />
         <Meter label="Width" value={shape.width} />
         <Meter label="Heat" value={shape.heat} />
       </div>
-      <p className="mb-2 text-xs text-[#9eb6cc]">{habitLine(habits)}</p>
       <div className="grid gap-1.5">
         {rows.map((card, index) => {
           const active = picked?.side === sideName && picked.index === index;
@@ -236,7 +249,7 @@ function CardLine({ card, color }: { card: PlayerCard; color: string }) {
         <span className="truncate font-semibold text-white">{card.name}</span>
         {perks ? <span className="ml-auto shrink-0 text-[10px] text-[#8fd4ff]">{perks}</span> : null}
       </div>
-      <p className="truncate text-[11px] text-[#b7c9da]">{card.kind === "skater" ? skaterParts(card) : goalieParts(card)}</p>
+      <p className="text-[11px] leading-4 text-[#b7c9da]">{card.kind === "skater" ? skaterParts(card) : goalieParts(card)}</p>
     </div>
   );
 }
@@ -278,12 +291,12 @@ function PoolCard({
 
 function skaterParts(card: SkaterCard) {
   const r = card.ratings;
-  return `Spd ${r.speed}  Agi ${r.agility}  Sht ${r.shot}  Atk ${r.attack}  Def ${r.defense}  Hnd ${r.handling}`;
+  return `Spd ${r.speed}  Agi ${r.agility}  Sht ${r.shot}  Atk ${r.attack}  Def ${r.defense}  Hnd ${r.handling}  Tgh ${r.toughness}`;
 }
 
 function goalieParts(card: GoalieCard) {
   const r = card.ratings;
-  return `Spd ${r.speed}  Agi ${r.agility}  IQ ${r.iq}  Reb ${r.rebound}  Comp ${r.composure}`;
+  return `Spd ${r.speed}  Agi ${r.agility}  IQ ${r.iq}  Reb ${r.rebound}  Comp ${r.composure}  Poke ${r.poke}`;
 }
 
 function styleBits(card: SkaterCard) {
