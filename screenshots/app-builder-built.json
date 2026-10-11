@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Space Hockey",
+      "hasCanvas": false,
+      "bodyTextLen": 1967,
+      "bodyTextHash": "b0f561d6b00f5c1e1c0aa4e56a146d031388659088ddd4a8cf0b350d23983619",
+      "bodyTextPrefix": "PLANETARY LEAGUE Space Hockey Random Stars vs weak Drop the puck",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Space Hockey",
+      "hasCanvas": false,
+      "bodyTextLen": 1967,
+      "bodyTextHash": "b0f561d6b00f5c1e1c0aa4e56a146d031388659088ddd4a8cf0b350d23983619",
+      "bodyTextPrefix": "PLANETARY LEAGUE Space Hockey Random Stars vs weak Drop the puck",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
