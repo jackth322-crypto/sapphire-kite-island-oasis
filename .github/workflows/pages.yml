@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm install
       - name: Build static site
         env:
           PAGES_BASE: /${{ github.event.repository.name }}/
