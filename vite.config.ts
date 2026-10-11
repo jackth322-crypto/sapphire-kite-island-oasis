@@ -145,7 +145,14 @@ function authPopupPlugin(): Plugin {
 // `0.0.0.0:8080` is the live-preview contract — don't change host/port.
 // The dev server starts once `src/router.tsx` and `src/routes/` exist — see
 // AGENTS.md § "First scaffold".
-export default defineConfig(({ command, isPreview }) => ({
+//
+// PAGES_BASE (e.g. /repo-name/) builds a static shell for GitHub Pages.
+// The Vercel deploy leaves it unset and keeps the Nitro server build.
+export default defineConfig(({ command, isPreview }) => {
+  const pagesBase = process.env.PAGES_BASE?.trim();
+  const pages = Boolean(pagesBase && pagesBase !== "/");
+  return {
+  base: pages ? pagesBase : "/",
   server: {
     host: "0.0.0.0",
     port: 8080,
@@ -166,8 +173,8 @@ export default defineConfig(({ command, isPreview }) => ({
     // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
     grokPwaPlugin(),
     tailwindcss(),
-    tanstackStart(),
-    ...(command === "build" || isPreview
+    tanstackStart(pages ? { spa: { enabled: true } } : {}),
+    ...(!pages && (command === "build" || isPreview)
       ? [
           nitro({
             preset: "vercel",
@@ -180,4 +187,5 @@ export default defineConfig(({ command, isPreview }) => ({
       : []),
     viteReact(),
   ],
-}));
+  };
+});
