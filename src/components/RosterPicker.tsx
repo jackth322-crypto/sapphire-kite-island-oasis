@@ -7,6 +7,7 @@ import {
   makePool,
   rollHabits,
   styleName,
+  teamColor,
   teamShape,
   type GoalieCard,
   type Matchup,
@@ -40,6 +41,12 @@ export function RosterPicker({ onPlay }: { onPlay: (match: Matchup) => void }) {
 
   const used = new Set([...home, ...away].flatMap((c) => (c ? [c.id] : [])));
   const ready = home.every(Boolean) && away.every(Boolean);
+
+  function sideOf(id: string): SideName | null {
+    if (home.some((c) => c?.id === id)) return "home";
+    if (away.some((c) => c?.id === id)) return "away";
+    return null;
+  }
 
   function assign(card: PlayerCard) {
     if (!picked) return;
@@ -116,10 +123,24 @@ export function RosterPicker({ onPlay }: { onPlay: (match: Matchup) => void }) {
             </h2>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
               {goalies.map((card) => (
-                <PoolCard key={card.id} card={card} used={used.has(card.id)} dim={picked?.index !== 3} onClick={() => assign(card)} />
+                <PoolCard
+                  key={card.id}
+                  card={card}
+                  used={used.has(card.id)}
+                  color={sideOf(card.id) ? teamColor(sideOf(card.id)!) : undefined}
+                  dim={picked?.index !== 3}
+                  onClick={() => assign(card)}
+                />
               ))}
               {skaters.map((card) => (
-                <PoolCard key={card.id} card={card} used={used.has(card.id)} dim={picked?.index === 3} onClick={() => assign(card)} />
+                <PoolCard
+                  key={card.id}
+                  card={card}
+                  used={used.has(card.id)}
+                  color={sideOf(card.id) ? teamColor(sideOf(card.id)!) : undefined}
+                  dim={picked?.index === 3}
+                  onClick={() => assign(card)}
+                />
               ))}
             </div>
           </section>
@@ -191,7 +212,7 @@ function SidePanel({
                   {SLOT_NAMES[index]}
                   {card && card.kind === "skater" ? ` · ${fitHint(card).replace("Fits ", "")}` : ""}
                 </p>
-                {card ? <CardLine card={card} /> : <p className="text-sm text-[#6e8498]">Empty slot</p>}
+                {card ? <CardLine card={card} color={teamColor(sideName)} /> : <p className="text-sm text-[#6e8498]">Empty slot</p>}
               </button>
               {card ? (
                 <button type="button" onClick={() => onClear(index)} className="rounded-xl border border-white/10 px-2.5 text-xs text-[#ffb4c4]">
@@ -206,13 +227,13 @@ function SidePanel({
   );
 }
 
-function CardLine({ card }: { card: PlayerCard }) {
+function CardLine({ card, color }: { card: PlayerCard; color: string }) {
   const perks = card.perks.map((p) => SHORT_PERK[p]).join(", ");
   return (
     <div className="mt-0.5 min-w-0">
       <div className="flex items-center gap-1.5">
         <span className="w-7 text-base font-black leading-none text-[#ffe36b]">{card.overall}</span>
-        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: `hsl(${card.hue} 88% 62%)` }} />
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: color }} />
         <span className="truncate font-semibold text-white">{card.name}</span>
         {perks ? <span className="ml-auto shrink-0 text-[10px] text-[#8fd4ff]">{perks}</span> : null}
       </div>
@@ -221,7 +242,19 @@ function CardLine({ card }: { card: PlayerCard }) {
   );
 }
 
-function PoolCard({ card, used, dim, onClick }: { card: PlayerCard; used: boolean; dim: boolean; onClick: () => void }) {
+function PoolCard({
+  card,
+  used,
+  dim,
+  color,
+  onClick,
+}: {
+  card: PlayerCard;
+  used: boolean;
+  dim: boolean;
+  color?: string;
+  onClick: () => void;
+}) {
   const ratings = card.kind === "skater" ? skaterParts(card) : goalieParts(card);
   return (
     <button
@@ -232,7 +265,7 @@ function PoolCard({ card, used, dim, onClick }: { card: PlayerCard; used: boolea
     >
       <div className="flex items-center gap-2">
         <span className="text-xl font-black text-[#ffe36b]">{card.overall}</span>
-        <span className="h-4 w-4 rounded-full" style={{ background: `hsl(${card.hue} 88% 62%)` }} />
+        <span className="h-4 w-4 rounded-full" style={{ background: color ?? `hsl(${card.hue} 88% 62%)` }} />
         <span className="font-semibold text-white">{card.name}</span>
       </div>
       <p className="mt-1 text-[11px] leading-4 text-[#b7c9da]">{ratings}</p>

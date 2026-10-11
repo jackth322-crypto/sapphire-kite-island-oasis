@@ -64,6 +64,12 @@ export type Matchup = {
   awayHabits: TeamHabits;
 };
 
+export const TEAM_HUE = { home: 191, away: 338 } as const;
+
+export function teamColor(side: keyof typeof TEAM_HUE) {
+  return `hsl(${TEAM_HUE[side]} 88% 62%)`;
+}
+
 export const PERK_LABEL: Record<Perk, string> = {
   bank: "Bank",
   sticky: "Sticky",

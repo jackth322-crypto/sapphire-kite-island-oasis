@@ -1,0 +1,1 @@
+- Space Hockey: Core gameplay first. Side-view/2.5D, single-player AI, localStorage. Using Phaser 3.90. Prototype in artifacts/index.html + game.js with basic rink, hover robots, puck physics, AI, controls, scoring. [2026-10-10]

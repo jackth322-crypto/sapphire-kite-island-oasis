@@ -1,8 +1,15 @@
 import { i as __toESM } from "../_runtime.mjs";
 import { K as require_react, b as require_jsx_runtime } from "../_libs/@tanstack/react-router+[...].mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-BLnfvhIv.js
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-Dp6DrXxm.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
+var TEAM_HUE = {
+	home: 191,
+	away: 338
+};
+function teamColor(side) {
+	return `hsl(${TEAM_HUE[side]} 88% 62%)`;
+}
 var PERK_LABEL = {
 	bank: "Bank",
 	sticky: "Sticky",
@@ -268,6 +275,11 @@ function RosterPicker({ onPlay }) {
 	});
 	const used = new Set([...home, ...away].flatMap((c) => c ? [c.id] : []));
 	const ready = home.every(Boolean) && away.every(Boolean);
+	function sideOf(id) {
+		if (home.some((c) => c?.id === id)) return "home";
+		if (away.some((c) => c?.id === id)) return "away";
+		return null;
+	}
 	function assign(card) {
 		if (!picked) return;
 		if (picked.index === 3 !== (card.kind === "goalie")) return;
@@ -368,11 +380,13 @@ function RosterPicker({ onPlay }) {
 							children: [goalies.map((card) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PoolCard, {
 								card,
 								used: used.has(card.id),
+								color: sideOf(card.id) ? teamColor(sideOf(card.id)) : void 0,
 								dim: picked?.index !== 3,
 								onClick: () => assign(card)
 							}, card.id)), skaters.map((card) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PoolCard, {
 								card,
 								used: used.has(card.id),
+								color: sideOf(card.id) ? teamColor(sideOf(card.id)) : void 0,
 								dim: picked?.index === 3,
 								onClick: () => assign(card)
 							}, card.id))]
@@ -457,7 +471,10 @@ function SidePanel({ title, tint, rows, habits, picked, onPick, onClear }) {
 							children: [/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", {
 								className: "text-[11px] font-semibold tracking-wide text-[#8fb0c8]",
 								children: [SLOT_NAMES[index], card && card.kind === "skater" ? ` · ${fitHint(card).replace("Fits ", "")}` : ""]
-							}), card ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CardLine, { card }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
+							}), card ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CardLine, {
+								card,
+								color: teamColor(sideName)
+							}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 								className: "text-sm text-[#6e8498]",
 								children: "Empty slot"
 							})]
@@ -473,7 +490,7 @@ function SidePanel({ title, tint, rows, habits, picked, onPick, onClear }) {
 		]
 	});
 }
-function CardLine({ card }) {
+function CardLine({ card, color }) {
 	const perks = card.perks.map((p) => SHORT_PERK[p]).join(", ");
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "mt-0.5 min-w-0",
@@ -486,7 +503,7 @@ function CardLine({ card }) {
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 					className: "h-2.5 w-2.5 shrink-0 rounded-full",
-					style: { background: `hsl(${card.hue} 88% 62%)` }
+					style: { background: color }
 				}),
 				/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 					className: "truncate font-semibold text-white",
@@ -503,7 +520,7 @@ function CardLine({ card }) {
 		})]
 	});
 }
-function PoolCard({ card, used, dim, onClick }) {
+function PoolCard({ card, used, dim, color, onClick }) {
 	const ratings = card.kind === "skater" ? skaterParts(card) : goalieParts(card);
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
 		type: "button",
@@ -520,7 +537,7 @@ function PoolCard({ card, used, dim, onClick }) {
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 						className: "h-4 w-4 rounded-full",
-						style: { background: `hsl(${card.hue} 88% 62%)` }
+						style: { background: color ?? `hsl(${card.hue} 88% 62%)` }
 					}),
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
 						className: "font-semibold text-white",
@@ -1796,7 +1813,7 @@ function robotFrom(card, team, role, i, controlled, sub) {
 		role,
 		controlled,
 		hover: i * 1.4 + (sub ? 3 : 0),
-		hue: card.hue,
+		hue: TEAM_HUE[team],
 		visor: card.visor,
 		antenna: card.antenna,
 		grabLock: 0,

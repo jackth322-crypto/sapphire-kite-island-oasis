@@ -1,6 +1,7 @@
 // Side-view rink. Hover is drawn only. Roles hold shape; one player pressures the puck.
 
 import {
+  TEAM_HUE,
   pace,
   teamShape,
   type Matchup,
@@ -1285,7 +1286,7 @@ function robotFrom(card: PlayerCard, team: Team, role: Role, i: number, controll
     role,
     controlled,
     hover: i * 1.4 + (sub ? 3 : 0),
-    hue: card.hue,
+    hue: TEAM_HUE[team],
     visor: card.visor,
     antenna: card.antenna,
     grabLock: 0,
