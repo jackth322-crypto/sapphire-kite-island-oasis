@@ -1,4 +1,4 @@
-export type Perk = "bank" | "sticky" | "afterburner" | "clean" | "glue" | "heavy" | "pickup";
+export type Perk = "bank" | "sticky" | "afterburner" | "glue" | "heavy" | "pickup";
 
 export type SkaterRatings = {
   speed: number;
@@ -6,8 +6,7 @@ export type SkaterRatings = {
   shot: number;
   attack: number;
   defense: number;
-  blastArea: number;
-  blastPower: number;
+  handling: number;
 };
 
 export type GoalieRatings = {
@@ -74,13 +73,12 @@ export const PERK_LABEL: Record<Perk, string> = {
   bank: "Bank",
   sticky: "Sticky",
   afterburner: "Afterburner",
-  clean: "Clean Release",
   glue: "Glue",
   heavy: "Heavy",
   pickup: "Pickup",
 };
 
-export const PERKS: Perk[] = ["bank", "sticky", "afterburner", "clean", "glue", "heavy", "pickup"];
+export const PERKS: Perk[] = ["bank", "sticky", "afterburner", "glue", "heavy", "pickup"];
 
 const SKATER_NAMES = [
   "Vex", "Quill", "Nox", "Juno", "Kite", "Rook", "Ion", "Hex", "Lumen", "Nimbus",
@@ -97,9 +95,20 @@ export function overallSkater(r: SkaterRatings) {
     r.shot * 18 +
     r.attack * 16 +
     r.defense * 14 +
-    r.blastArea * 4 +
-    r.blastPower * 4;
+    r.handling * 8;
   return Math.round(score / 11);
+}
+
+/** Carry limit and when the red slap window opens.
+ *  Rating 5 holds 1.5s and goes red at 1.28s. Elite handling goes red early
+ *  (~0.78s) and still releases by ~1.5s. Poor handling is stuck longer (~1.9s)
+ *  and only turns red at the end.
+ */
+export function handlingWindow(handling: number) {
+  const h = Math.min(11, Math.max(1, handling));
+  const carryMax = 1.5 + Math.max(0, 5 - h) * 0.095;
+  const redAt = Math.min(carryMax * 0.92, Math.max(0.72, 1.275 - (h - 5) * 0.082));
+  return { carryMax, redAt };
 }
 
 export function overallGoalie(r: GoalieRatings) {
@@ -119,12 +128,7 @@ export function teamShape(cards: PlayerCard[]): TeamShape {
     push: clamp(avg((c) => c.styles.aggressive) * 0.75 + (avg((c) => c.ratings.speed) / 11) * 100 * 0.25, 0, 100),
     share: clamp((100 - avg((c) => c.styles.shooter)) * 0.7 + (avg((c) => c.ratings.attack) / 11) * 100 * 0.3, 0, 100),
     width: clamp(avg((c) => c.styles.wide), 0, 100),
-    heat: clamp(
-      avg((c) => c.styles.physical) * 0.7 +
-        (avg((c) => (c.ratings.blastArea + c.ratings.blastPower) / 2) / 11) * 100 * 0.3,
-      0,
-      100,
-    ),
+    heat: clamp(avg((c) => c.styles.physical) * 0.75 + (avg((c) => c.ratings.defense) / 11) * 100 * 0.25, 0, 100),
   };
 }
 
@@ -167,8 +171,7 @@ export function makePool(seed = 7) {
       shot: rollStat(rng),
       attack: rollStat(rng),
       defense: rollStat(rng),
-      blastArea: rollStat(rng),
-      blastPower: rollStat(rng),
+      handling: rollStat(rng),
     };
     return {
       id: `s${i}`,

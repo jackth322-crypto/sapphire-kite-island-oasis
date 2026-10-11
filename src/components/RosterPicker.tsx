@@ -26,7 +26,6 @@ const SHORT_PERK: Record<Perk, string> = {
   bank: "Bank",
   sticky: "Sticky",
   afterburner: "Burner",
-  clean: "Clean",
   glue: "Glue",
   heavy: "Heavy",
   pickup: "Pickup",
@@ -279,7 +278,7 @@ function PoolCard({
 
 function skaterParts(card: SkaterCard) {
   const r = card.ratings;
-  return `Spd ${r.speed}  Agi ${r.agility}  Sht ${r.shot}  Atk ${r.attack}  Def ${r.defense}  Bl ${r.blastArea}/${r.blastPower}`;
+  return `Spd ${r.speed}  Agi ${r.agility}  Sht ${r.shot}  Atk ${r.attack}  Def ${r.defense}  Hnd ${r.handling}`;
 }
 
 function goalieParts(card: GoalieCard) {

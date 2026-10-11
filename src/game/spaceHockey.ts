@@ -2,6 +2,7 @@
 
 import {
   TEAM_HUE,
+  handlingWindow,
   pace,
   teamShape,
   type Matchup,
@@ -25,6 +26,26 @@ export type ControlsProbe = {
   getMode?: () => string;
   bench?: (team: string) => number;
   skip?: () => void;
+  getMech?: () => {
+    x: number;
+    y: number;
+    speed: number;
+    rail: string | null;
+    pin: number;
+    carry: number;
+    red: boolean;
+    max: number;
+    holder: string;
+    alive: { name: string; team: string; role: string; pin: number; rail: string | null; y: number }[];
+  };
+  freezeAi?: (on: boolean) => void;
+  give?: () => void;
+  giveTo?: (team: string, role: string) => boolean;
+  forceRed?: () => number;
+  face?: (ang: number) => void;
+  shoot?: () => string;
+  pass?: () => string;
+  nudge?: (team: string, role: string, vx: number, vy: number) => boolean;
 };
 
 declare global {
@@ -38,10 +59,17 @@ const H = 700;
 const RINK = { x: 80, y: 124, w: 1040, h: 480 };
 const MID_Y = RINK.y + RINK.h / 2;
 const GOAL_HALF = 98;
-const CARRY_MAX = 2;
 const BASE_SPEED = 284;
 const BOOST_SPEED = 452;
-const PULSE_CD = 10;
+const GLASS_FLOOR = 640;
+const PIN_TIME = 0.9;
+const PIN_BAND = 78;
+const PIN_SLIDE = 230;
+const SPIKE_LEN = 210;
+const SPIKE_ANG = 0.46;
+const SPIKE_LIFE = 0.42;
+const TOP_Y = RINK.y + 26;
+const BOT_Y = RINK.y + RINK.h - 26;
 
 type Team = "home" | "away";
 type Role = "goalie" | "defender" | "mid" | "attacker";
@@ -62,8 +90,10 @@ type Robot = {
   boost: number;
   boosting: boolean;
   lives: number;
-  pulse: number;
   hurt: number;
+  rail: "top" | "bottom" | null;
+  railLock: number;
+  pin: number;
   name: string;
   card: PlayerCard;
 };
@@ -85,7 +115,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     away: teamShape([...match.away.ice, ...match.away.bench]),
   };
   const habits: Record<Team, TeamHabits> = { home: match.homeHabits, away: match.awayHabits };
-  const rings: { x: number; y: number; age: number }[] = [];
+  const rings: { x: number; y: number; ang: number; age: number }[] = [];
 
   let holder: Robot | null = null;
   let carry = 0;
@@ -106,7 +136,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
   let openRole: Role = "mid";
   let blastoff = false;
   let note = "";
-  const teamCool: Record<Team, number> = { home: 0, away: 0 };
+  let freezeAi = false;
   const deaths: { team: Team; role: Role }[] = [];
 
   const stick = { id: -1, ox: 0, oy: 0, dx: 0, dy: 0, tx: 0, ty: 0 };
@@ -125,7 +155,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
 
   const passBtn = { x: W - 268, y: H - 86, w: 112, h: 52 };
   const shotBtn = { x: W - 144, y: H - 86, w: 112, h: 52 };
-  const blastBtn = { x: W - 392, y: H - 86, w: 112, h: 52 };
 
   const t0 = performance.now();
   let last = t0;
@@ -169,6 +198,11 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       r.y = y;
       r.vx = 0;
       r.vy = 0;
+      r.rail = null;
+      r.railLock = 0;
+      r.pin = 0;
+      r.boost = 1;
+      r.boosting = false;
       return true;
     },
     wound: (team: string, role: string) => {
@@ -177,10 +211,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       woundRobot(r);
       return r.lives;
     },
-    cool: () => {
-      teamCool.home = 0;
-      teamCool.away = 0;
-    },
+    cool: () => undefined,
     getMode: () => (blastoff ? "blastoff" : mode),
     bench: (team: string) => bench[team === "away" ? "away" : "home"].length,
     skip: () => {
@@ -189,6 +220,64 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
         mode = "play";
         openNextDeath();
       }
+    },
+    getMech: () => ({
+      x: human().x,
+      y: human().y,
+      speed: Math.hypot(human().vx, human().vy),
+      rail: human().rail,
+      pin: human().pin,
+      carry,
+      red: !!holder && holder.role !== "goalie" && carry >= redAtOf(holder),
+      max: carryLimit(holder),
+      holder: holder ? `${holder.team}:${holder.role}` : "",
+      alive: robots.map((r) => ({
+        name: r.name,
+        team: r.team,
+        role: r.role,
+        pin: r.pin,
+        rail: r.rail,
+        y: r.y,
+      })),
+    }),
+    freezeAi: (on: boolean) => {
+      freezeAi = on;
+    },
+    give: () => {
+      takePuck(human());
+    },
+    giveTo: (team: string, role: string) => {
+      const r = robots.find((o) => o.team === team && o.role === role);
+      if (!r) return false;
+      takePuck(r);
+      return true;
+    },
+    forceRed: () => {
+      if (!holder) takePuck(human());
+      if (!holder) return 0;
+      carry = redAtOf(holder) + 0.04;
+      return carry;
+    },
+    face: (ang: number) => {
+      facing = ang;
+    },
+    shoot: () => {
+      if (!holder || holder !== human() || mode !== "play") return "no";
+      const slap = inRed(holder);
+      release(facing, slap ? 980 : 520, slap);
+      return slap ? "slap" : "shot";
+    },
+    pass: () => {
+      if (!holder || mode !== "play") return "no";
+      release(facing, 520, false);
+      return "pass";
+    },
+    nudge: (team: string, role: string, vx: number, vy: number) => {
+      const r = robots.find((o) => o.team === team && o.role === role);
+      if (!r) return false;
+      r.vx = vx;
+      r.vy = vy;
+      return true;
     },
   };
 
@@ -201,7 +290,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       return;
     }
     if (mode !== "play" || gameOver) return;
-    if (e.code === "KeyL") tryPulse(human());
     if (e.code === "KeyJ") {
       if (!holder || holder.team !== "home") switchSkater();
       else {
@@ -236,10 +324,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       return;
     }
     if (mode !== "play" || gameOver) return;
-    if (hitBtn(blastBtn, p)) {
-      tryPulse(human());
-      return;
-    }
     if (hitBtn(passBtn, p)) {
       if (!holder || holder.team !== "home") switchSkater();
       else {
@@ -262,7 +346,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     const dragging = stick.id !== -1 && e.pointerId === stick.id;
     if (!dragging && !inside(e)) return;
     const p = worldFromClient(e.clientX, e.clientY);
-    if (!dragging && (hitBtn(blastBtn, p) || hitBtn(passBtn, p) || hitBtn(shotBtn, p))) return;
+    if (!dragging && (hitBtn(passBtn, p) || hitBtn(shotBtn, p))) return;
     noteCursor(p);
   };
   const onPointerUp = (e: PointerEvent) => {
@@ -369,9 +453,14 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     charging = null;
     charge = 0;
     if (holder !== human() || gameOver || mode !== "play") return;
-    const speed =
-      kind === "pass" ? 280 + t * 300 : (480 + t * 420) * pace(holder ? shotOf(holder) : 5);
-    launch(liveAim(), speed);
+    const slap = kind === "shot" && inRed(holder);
+    const speed = kind === "pass" ? 280 + t * 300 : shotSpeed(t, slap);
+    release(liveAim(), speed, slap);
+  }
+
+  function shotSpeed(t: number, slap: boolean) {
+    const paceShot = pace(holder ? shotOf(holder) : 5);
+    return (slap ? 760 + t * 480 : 480 + t * 420) * paceShot;
   }
 
   function liveAim() {
@@ -379,29 +468,37 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     return facing;
   }
 
-  function launch(ang: number, speed: number) {
+  function release(ang: number, speed: number, slap: boolean) {
     if (!holder) return;
     const who = holder;
-    holder.grabLock = 0.4;
+    who.grabLock = slap ? 0.35 : 0.4;
+    who.pin = 0;
     holder = null;
     carry = 0;
     secure = 0;
     puck.bank = perk(who, "bank");
     puck.vx = Math.cos(ang) * speed;
     puck.vy = Math.sin(ang) * speed;
+    if (slap) spikeCone(who, ang);
+  }
+
+  function launch(ang: number, speed: number) {
+    release(ang, speed, false);
   }
 
   function dropPuck() {
     if (!holder) return;
     const who = holder;
     const ang = travelAngle(who);
+    const slap = who.role !== "goalie" && inRed(who);
+    const keepX = who.vx;
+    const keepY = who.vy;
+    release(ang, slap ? 880 * pace(shotOf(who)) : 180, slap);
     who.grabLock = 0.55;
-    holder = null;
-    carry = 0;
-    secure = 0;
-    puck.bank = perk(who, "bank");
-    puck.vx = Math.cos(ang) * 180 + who.vx * 0.3;
-    puck.vy = Math.sin(ang) * 180 + who.vy * 0.3;
+    if (!slap) {
+      puck.vx = Math.cos(ang) * 180 + keepX * 0.3;
+      puck.vy = Math.sin(ang) * 180 + keepY * 0.3;
+    }
   }
 
   function takePuck(r: Robot, from: Robot | null = null) {
@@ -459,10 +556,11 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
   const step = (dt: number) => {
     shake = Math.max(0, shake - dt * 4);
     for (const ring of rings) ring.age += dt;
-    for (let i = rings.length - 1; i >= 0; i--) if (rings[i].age > 0.4) rings.splice(i, 1);
-    for (const r of robots) r.hurt = Math.max(0, r.hurt - dt);
-    teamCool.home = Math.max(0, teamCool.home - dt);
-    teamCool.away = Math.max(0, teamCool.away - dt);
+    for (let i = rings.length - 1; i >= 0; i--) if (rings[i].age > SPIKE_LIFE) rings.splice(i, 1);
+    for (const r of robots) {
+      r.hurt = Math.max(0, r.hurt - dt);
+      r.railLock = Math.max(0, r.railLock - dt);
+    }
 
     if (mode === "count") {
       countLeft = Math.max(0, countLeft - dt);
@@ -496,6 +594,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
 
     for (const r of robots) moveBody(r, dt, 22);
     pushApart(robots);
+    tickPins(dt);
 
     if (holder) {
       parentPuck();
@@ -507,7 +606,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       maybeGrab();
     }
 
-    maybeAiPulse();
     maybeSave();
 
     if (inMouth() && puck.x < RINK.x + 8) addScore("away");
@@ -534,42 +632,59 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     }
   }
 
-  function tryPulse(r: Robot) {
-    if (mode !== "play" || gameOver || faceoff > 0 || holder !== r) return;
-    if (teamCool[r.team] > 0) return;
-    teamCool[r.team] = PULSE_CD;
-    rings.push({ x: r.x, y: r.y, age: 0 });
-    const hits = robots.filter((o) => o !== r && dist(r, o) < pulseRange(r));
-    const knock = pulseKnock(r);
-    for (const o of hits) {
-      const dx = o.x - r.x;
-      const dy = o.y - r.y;
-      const d = Math.hypot(dx, dy) || 1;
-      const shove = knock * (o.team === r.team ? 0.85 : 1);
-      o.vx += (dx / d) * shove;
-      o.vy += (dy / d) * shove;
-      o.x += (dx / d) * 12;
-      o.y += (dy / d) * 12;
-    }
-    for (const o of hits) {
-      if (o.role === "goalie") continue;
-      if (o.team === r.team && perk(r, "clean")) continue;
-      woundRobot(o);
-    }
-    openNextDeath();
+  function inRed(r: Robot) {
+    return r.role !== "goalie" && carry >= redAtOf(r);
   }
 
-  function maybeAiPulse() {
-    const carrier = holder;
-    if (!carrier || carrier.controlled || teamCool[carrier.team] > 0) return;
-    const range = pulseRange(carrier);
-    const near = robots.filter((o) => o !== carrier && dist(o, carrier) < range);
-    const foe = near.some((o) => o.team !== carrier.team && o.role !== "goalie");
-    const friend = near.some((o) => o.team === carrier.team && o.role !== "goalie");
-    const heat = liveShape(carrier.team).heat;
-    if (!foe) return;
-    if (friend && heat < 72 && carrier.card.styles.physical < 78 && !perk(carrier, "clean")) return;
-    tryPulse(carrier);
+  function spikeCone(who: Robot, ang: number) {
+    rings.push({ x: who.x, y: who.y, ang, age: 0 });
+    shake = 0.28;
+    for (const o of [...robots]) {
+      if (o === who || !inCone(who, o, ang)) continue;
+      o.vx += Math.cos(ang) * (o.role === "goalie" || o.team === who.team ? 180 : 80);
+      o.vy += Math.sin(ang) * (o.role === "goalie" || o.team === who.team ? 140 : 60);
+      if (o.role === "goalie" || o.team === who.team) continue;
+      woundRobot(o);
+    }
+  }
+
+  function inCone(from: Robot, o: Robot, ang: number) {
+    const dx = o.x - from.x;
+    const dy = o.y - from.y;
+    const d = Math.hypot(dx, dy);
+    if (d < 16 || d > SPIKE_LEN) return false;
+    const diff = Math.atan2(Math.sin(Math.atan2(dy, dx) - ang), Math.cos(Math.atan2(dy, dx) - ang));
+    return Math.abs(diff) < SPIKE_ANG;
+  }
+
+  function tickPins(dt: number) {
+    const held = new Set<Robot>();
+    for (const a of [...robots]) {
+      if (!a.boosting || a.role === "goalie" || a.rail) continue;
+      for (const b of [...robots]) {
+        if (a === b || a.team === b.team || b.role === "goalie" || b.rail) continue;
+        if (dist(a, b) > 64) continue;
+        const topGap = b.y - TOP_Y;
+        const botGap = BOT_Y - b.y;
+        const wall =
+          topGap >= -8 && topGap < PIN_BAND && topGap <= botGap ? "top" : botGap >= -8 && botGap < PIN_BAND ? "bottom" : null;
+        if (!wall) continue;
+        const pressing = wall === "top" ? a.y > b.y - 12 : a.y < b.y + 12;
+        if (!pressing) continue;
+        const glassY = wall === "top" ? TOP_Y : BOT_Y;
+        b.y += (glassY - b.y) * Math.min(1, dt * 14);
+        b.vy *= 0.15;
+        if (Math.abs(b.vx) > PIN_SLIDE) continue;
+        const heavy = perk(a, "heavy") ? 1.28 : 1;
+        b.pin = Math.min(1, b.pin + (dt / PIN_TIME) * heavy);
+        held.add(b);
+        if (b.pin >= 1) {
+          b.pin = 0;
+          woundRobot(b);
+        }
+      }
+    }
+    for (const r of robots) if (!held.has(r)) r.pin = Math.max(0, r.pin - dt * 1.8);
   }
 
   function woundRobot(r: Robot) {
@@ -636,6 +751,9 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     sub.vx = 0;
     sub.vy = 0;
     sub.boosting = false;
+    sub.rail = null;
+    sub.railLock = 0;
+    sub.pin = 0;
     sub.controlled = false;
     robots.push(sub);
     if (!robots.some((o) => o.controlled) && sub.team === "home") sub.controlled = true;
@@ -681,19 +799,18 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     return r.card.kind === "skater" ? r.card.ratings.defense : r.card.ratings.iq;
   }
 
-  function pulseRange(r: Robot) {
-    if (r.card.kind === "goalie") return 48;
-    return 40 + (r.card.ratings.blastArea - 1) * 6;
-  }
-
-  function pulseKnock(r: Robot) {
-    if (r.card.kind === "goalie") return 140;
-    return 90 + (r.card.ratings.blastPower - 1) * 22;
+  function handlingOf(r: Robot) {
+    return r.card.kind === "skater" ? r.card.ratings.handling : 5;
   }
 
   function carryLimit(r: Robot | null) {
-    if (r && perk(r, "sticky")) return 2.75;
-    return CARRY_MAX;
+    if (!r) return 1.5;
+    const extra = perk(r, "sticky") ? 0.45 : 0;
+    return handlingWindow(handlingOf(r)).carryMax + extra;
+  }
+
+  function redAtOf(r: Robot) {
+    return handlingWindow(handlingOf(r)).redAt;
   }
 
   function liveShape(team: Team): TeamShape {
@@ -734,6 +851,9 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
         const blend = 1 - Math.exp(-dt / tau);
         you.vx += (Math.cos(wish) * aim - you.vx) * blend;
         you.vy += (Math.sin(wish) * aim - you.vy) * blend;
+        const inward =
+          (you.rail === "top" && Math.sin(wish) > 0.28) || (you.rail === "bottom" && Math.sin(wish) < -0.28);
+        applyGlass(you, true, inward, Math.cos(wish));
       }
       return;
     }
@@ -763,10 +883,13 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
         if (Math.abs(diff) < 0.4) facing = velAng;
       }
     }
+    const inward = (you.rail === "top" && iy > 0) || (you.rail === "bottom" && iy < 0);
+    applyGlass(you, true, inward, ix);
   }
 
   function tickBoost(r: Robot, want: boolean, dt: number) {
-    r.boosting = want && r.boost > 0.02 && !gameOver;
+    const burning = want && !r.rail && r.boost > 0.02 && !gameOver;
+    r.boosting = burning;
     const burn = perk(r, "afterburner") ? 1.7 : 1.15;
     const regen = perk(r, "afterburner") ? 1.55 : 2.6;
     if (r.boosting) r.boost = Math.max(0, r.boost - dt / burn);
@@ -777,6 +900,8 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     if (r.boost < 0.12 || gameOver) return false;
     if (r.role === "goalie") return desperate(r) && dist(r, puck) > 64 && dist(r, puck) < 190;
     const opp = nearestOpponent(r);
+    if (opp && opp.role !== "goalie" && !opp.rail && dist(r, opp) < 120 && (opp.y <= TOP_Y + 48 || opp.y >= BOT_Y - 48))
+      return true;
     if (holder === r) {
       if (opp && dist(r, opp) < 110) return true;
       return canShoot(r) && (!opp || dist(r, opp) > 130);
@@ -786,6 +911,10 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
   }
 
   function driveAi(dt: number) {
+    if (freezeAi) {
+      for (const r of robots) if (!r.controlled) r.boosting = false;
+      return;
+    }
     const homeChaser = pickChaser("home");
     const awayChaser = pickChaser("away");
     for (const r of robots) {
@@ -796,20 +925,105 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       if (holder === r) {
         tickBoost(r, wantsBoost(r, false), dt);
         thinkWithPuck(r, dt);
-        if (r.boosting) {
+        if (r.boosting && !r.rail) {
           const sp = Math.hypot(r.vx, r.vy) || 1;
           const boosted = BOOST_SPEED * speedOf(r);
           r.vx = (r.vx / sp) * boosted;
           r.vy = (r.vy / sp) * boosted;
         }
+        applyGlass(r, glassEnter(r), glassPeel(r), attackSign(r.team));
+        continue;
+      }
+      const pinAt = pinSpot(r);
+      if (pinAt) {
+        tickBoost(r, true, dt);
+        seek(r, pinAt.x, pinAt.y, BOOST_SPEED * speedOf(r), dt);
         continue;
       }
       const chasing = r === homeChaser || r === awayChaser;
       tickBoost(r, wantsBoost(r, chasing), dt);
-      const spot = chasing ? chasePoint(r) : shapeSpot(r);
+      const spot = glassEnter(r)
+        ? { x: r.x + attackSign(r.team) * 220, y: r.y < MID_Y ? TOP_Y : BOT_Y }
+        : chasing
+          ? chasePoint(r)
+          : shapeSpot(r);
       const cruise = (r.role === "goalie" ? (desperate(r) ? 242 : 180) : chasing ? 248 : 210) * speedOf(r);
       seek(r, spot.x, spot.y, r.boosting ? BOOST_SPEED * speedOf(r) : cruise, dt);
+      applyGlass(r, glassEnter(r), glassPeel(r), attackSign(r.team));
     }
+  }
+
+  function glassEnter(r: Robot) {
+    if (r.role === "goalie" || r.rail) return false;
+    const outlet = holder === r && attackDepth(r.team, r.x) < 0.58;
+    const recover = holder?.team !== r.team && attackDepth(r.team, puck.x) < 0.4 && r.role !== "attacker";
+    return outlet || recover;
+  }
+
+  function glassPeel(r: Robot) {
+    return !!r.rail && holder === r && attackDepth(r.team, r.x) > 0.62;
+  }
+
+  function applyGlass(r: Robot, enter: boolean, inward: boolean, along: number) {
+    if (r.role === "goalie" || r.railLock > 0) {
+      if (r.railLock > 0) r.rail = null;
+      return;
+    }
+    if (r.rail && inward) {
+      const wall = r.rail;
+      r.rail = null;
+      r.railLock = 0.28;
+      r.vy = wall === "top" ? 260 : -260;
+      r.vx *= 0.85;
+      return;
+    }
+    const keep =
+      r.controlled ||
+      (holder === r && attackDepth(r.team, r.x) <= 0.66) ||
+      (holder?.team !== r.team && attackDepth(r.team, r.x) < 0.5);
+    if (r.rail && !keep) {
+      const wall = r.rail;
+      r.rail = null;
+      r.railLock = 0.2;
+      r.vy = wall === "top" ? 150 : -150;
+      return;
+    }
+    if (!r.rail && !enter) return;
+    if (!r.rail) {
+      const pinning = robots.some((o) => {
+        if (o === r || o.team === r.team || o.role === "goalie" || o.rail || dist(r, o) > 72) return false;
+        if (o.y < r.y && o.y - TOP_Y < PIN_BAND) return true;
+        if (o.y > r.y && BOT_Y - o.y < PIN_BAND) return true;
+        return false;
+      });
+      if (pinning) return;
+      if (r.y <= TOP_Y + 36) r.rail = "top";
+      else if (r.y >= BOT_Y - 36) r.rail = "bottom";
+      else return;
+    }
+    const dir = along === 0 ? Math.sign(r.vx) || attackSign(r.team) : Math.sign(along);
+    r.y = r.rail === "top" ? TOP_Y : BOT_Y;
+    r.vy = 0;
+    r.vx = dir * Math.max(GLASS_FLOOR, 700 * speedOf(r));
+    r.boosting = false;
+  }
+
+  function pinSpot(r: Robot) {
+    if (r.role === "goalie" || r.rail || holder === r) return null;
+    let best: Robot | null = null;
+    let bestD = 150;
+    for (const o of robots) {
+      if (o.team === r.team || o.role === "goalie" || o.rail) continue;
+      if (o.y > TOP_Y + PIN_BAND && o.y < BOT_Y - PIN_BAND) continue;
+      const d = dist(r, o);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    if (!best) return null;
+    if (r.role !== "defender" && r !== pickChaser(r.team) && r.card.styles.physical < 62) return null;
+    return { x: best.x, y: best.y < MID_Y ? best.y + 30 : best.y - 30 };
   }
 
   function deliver(r: Robot, target: { x: number; y: number }, speed: number, preferBounce: boolean) {
@@ -837,8 +1051,31 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     const shootBias = r.card.styles.shooter * 0.55 + (100 - shape.share) * 0.45;
     const patient = habit.patient / 100;
     const limit = carryLimit(r);
-    if (r.role === "goalie" || carry > limit * (0.78 - patient * 0.12)) {
+    const red = redAtOf(r);
+    const opp = nearestOpponent(r);
+    const pressed = !!opp && dist(r, opp) < 84;
+    if (r.role !== "goalie" && carry >= red && canShoot(r, shootBias, habit.earlyShot)) {
+      release(Math.atan2(goal.y - r.y, goal.x - r.x), 900 * pace(shotOf(r)), true);
+      return;
+    }
+    const windup =
+      r.role !== "goalie" &&
+      !pressed &&
+      carry > 0.42 &&
+      carry < red &&
+      habit.earlyShot < 72 &&
+      (r.card.styles.shooter > 56 || shotOf(r) >= 8) &&
+      canShoot(r, shootBias, habit.earlyShot);
+    if (windup) {
+      seek(r, goal.x - s * 120, MID_Y + (r.y < MID_Y ? -36 : 36), 240 * speedOf(r), dt);
+      return;
+    }
+    if (r.role === "goalie" || carry > limit * 0.96) {
       if (mate && deliver(r, mate, passSpeed(r, mate), true)) return;
+      if (r.role !== "goalie") {
+        release(s > 0 ? 0 : Math.PI, 860 * pace(shotOf(r)), carry >= red);
+        return;
+      }
       launch(s > 0 ? 0 : Math.PI, 420 * pace(shotOf(r)));
       return;
     }
@@ -849,8 +1086,10 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
     if (passNow && mate && deliver(r, mate, passSpeed(r, mate), r.card.styles.wide > 52 || habit.bounce > 58)) return;
     let tx = goal.x - s * 70;
     let ty = MID_Y + (r.y < MID_Y ? -1 : 1) * (36 + Math.abs(r.card.styles.wide - 50));
-    const opp = nearestOpponent(r);
-    if (opp && dist(r, opp) < 78) {
+    if (attackDepth(r.team, r.x) < 0.55 && !pressed) {
+      tx = r.x + s * 260;
+      ty = r.y < MID_Y ? TOP_Y : BOT_Y;
+    } else if (opp && dist(r, opp) < 78) {
       const side = r.y <= opp.y ? -1 : 1;
       tx = r.x + s * 120;
       ty = r.y + side * 110;
@@ -1177,6 +1416,9 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       r.grabLock = 0.3;
       r.boost = 1;
       r.boosting = false;
+      r.rail = null;
+      r.railLock = 0.25;
+      r.pin = 0;
       r.controlled = r.team === "home" && r.role === "attacker";
     }
     facing = 0;
@@ -1199,6 +1441,7 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       holder,
       carry,
       carryMax: carryLimit(holder),
+      carryRed: !!holder && inRed(holder),
       player: human(),
       facing,
       charging,
@@ -1215,7 +1458,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       faceoff,
       passBtn,
       shotBtn,
-      blastBtn,
       ownPuck: holder?.team === "home",
       aimOn: cursor.on,
       aimX: cursor.x,
@@ -1226,7 +1468,6 @@ export function mountSpaceHockey(canvas: HTMLCanvasElement, match: Matchup) {
       blastoff,
       rings,
       subs: bench.home,
-      pulse: teamCool.home,
     });
     ctx.restore();
   };
@@ -1292,9 +1533,11 @@ function robotFrom(card: PlayerCard, team: Team, role: Role, i: number, controll
     grabLock: 0,
     boost: 1,
     boosting: false,
-    lives: 3,
-    pulse: 0,
+    lives: 1,
     hurt: 0,
+    rail: null,
+    railLock: 0,
+    pin: 0,
     name: card.name,
     card,
   };
@@ -1422,8 +1665,20 @@ function pushApart(list: Robot[]) {
       a.vy -= (dy / d) * shove * (0.6 + heavyB);
       b.vx += (dx / d) * shove * (0.6 + heavyA);
       b.vy += (dy / d) * shove * (0.6 + heavyA);
+      if (a.team !== b.team) {
+        if (a.rail) knockRail(a);
+        if (b.rail) knockRail(b);
+      }
     }
   }
+}
+
+function knockRail(r: Robot) {
+  const wall = r.rail;
+  r.rail = null;
+  r.railLock = 0.65;
+  r.vy = wall === "top" ? 250 : wall === "bottom" ? -250 : r.vy;
+  r.vx *= 0.35;
 }
 
 function hitBtn(b: { x: number; y: number; w: number; h: number }, p: { x: number; y: number }) {
@@ -1448,6 +1703,7 @@ function paintWorld(
     holder: Robot | null;
     carry: number;
     carryMax: number;
+    carryRed: boolean;
     player: Robot;
     facing: number;
     charging: "pass" | "shot" | null;
@@ -1464,7 +1720,6 @@ function paintWorld(
     faceoff: number;
     passBtn: Btn;
     shotBtn: Btn;
-    blastBtn: Btn;
     ownPuck: boolean;
     aimOn: boolean;
     aimX: number;
@@ -1473,9 +1728,8 @@ function paintWorld(
     countLeft: number;
     note: string;
     blastoff: boolean;
-    rings: { x: number; y: number; age: number }[];
+    rings: { x: number; y: number; ang: number; age: number }[];
     subs: Robot[];
-    pulse: number;
   },
 ) {
   const sky = c.createLinearGradient(0, 0, 0, H);
@@ -1515,15 +1769,60 @@ function paintWorld(
   strokeGoal(c, RINK.x, 1, "#ff6b8a");
   strokeGoal(c, RINK.x + RINK.w, -1, "#7eb0ff");
 
-  for (const ring of s.rings) {
-    c.strokeStyle = `rgba(255, 120, 90, ${1 - ring.age / 0.4})`;
-    c.lineWidth = 3;
-    c.beginPath();
-    c.arc(ring.x, ring.y, 16 + ring.age * 90, 0, Math.PI * 2);
-    c.stroke();
+  for (const r of s.robots) {
+    if (r.pin < 0.02) continue;
+    const top = r.y < MID_Y;
+    const edge = top ? RINK.y + 5 : RINK.y + RINK.h - 5;
+    const reach = 40 + 150 * r.pin;
+    const tip = top ? edge + reach : edge - reach;
+    const y0 = Math.min(edge, tip);
+    const h = Math.abs(tip - edge);
+    c.save();
+    c.shadowColor = "#ff2a1a";
+    c.shadowBlur = 18;
+    c.fillStyle = `rgba(255, 45, 30, ${0.45 + 0.5 * r.pin})`;
+    c.fillRect(r.x - 9, y0, 18, h);
+    c.fillStyle = "#fff1c9";
+    c.fillRect(r.x - 2, y0, 4, h);
+    c.restore();
   }
 
-  for (const r of s.robots) paintRobot(c, r, time, s.holder === r, s.carry, s.carryMax, r.boosting, s.holder === r && r.team === "home" ? s.pulse : 0);
+  for (const r of s.robots) if (r.rail) {
+    const dir = Math.sign(r.vx) || 1;
+    c.save();
+    c.lineCap = "round";
+    c.shadowColor = "#b8fbff";
+    c.shadowBlur = 14;
+    c.strokeStyle = "rgba(170, 250, 255, 0.95)";
+    c.lineWidth = 8;
+    c.beginPath();
+    c.moveTo(r.x - dir * 24, r.y);
+    c.lineTo(r.x - dir * 160, r.y);
+    c.stroke();
+    c.shadowBlur = 0;
+    c.strokeStyle = "rgba(255,255,255,0.8)";
+    c.lineWidth = 3;
+    c.beginPath();
+    c.moveTo(r.x - dir * 18, r.y + (r.rail === "top" ? 10 : -10));
+    c.lineTo(r.x - dir * 110, r.y + (r.rail === "top" ? 10 : -10));
+    c.stroke();
+    c.restore();
+  }
+
+  for (const r of s.robots) paintRobot(c, r, time, s.holder === r, s.carry, s.carryMax, s.carryRed, r.boosting);
+
+  for (const ring of s.rings) {
+    const fade = 1 - ring.age / SPIKE_LIFE;
+    c.beginPath();
+    c.moveTo(ring.x, ring.y);
+    c.arc(ring.x, ring.y, SPIKE_LEN, ring.ang - SPIKE_ANG, ring.ang + SPIKE_ANG);
+    c.closePath();
+    c.fillStyle = `rgba(255, 48, 32, ${0.5 * fade})`;
+    c.fill();
+    c.strokeStyle = `rgba(255, 236, 190, ${0.95 * fade})`;
+    c.lineWidth = 3;
+    c.stroke();
+  }
 
   c.fillStyle = "#090b10";
   c.beginPath();
@@ -1561,13 +1860,12 @@ function paintWorld(
 
   c.fillStyle = "rgba(220,232,255,0.72)";
   c.font = "500 14px ui-sans-serif, system-ui, sans-serif";
-  c.fillText("L blast with the puck  ·  J pass  ·  K shoot", 96, H - 22);
+  c.fillText("Ride the glass to break out   ·   red ring slaps   ·   J pass   ·   K shoot", 96, H - 22);
 
-  paintButton(c, s.blastBtn, s.pulse > 0 ? String(Math.ceil(s.pulse)) : "BLAST", false);
   paintButton(c, s.passBtn, s.ownPuck ? "PASS" : "SWAP", s.charging === "pass");
   paintButton(c, s.shotBtn, "SHOOT", s.charging === "shot");
 
-  if (s.gameOver) banner(c, s.blastoff ? `${s.winner} BLASTOFF` : `${s.winner} WINS`);
+  if (s.gameOver) banner(c, s.blastoff ? `${s.winner} CLEARS` : `${s.winner} WINS`);
   else if (s.mode === "pick") paintSubs(c, s.subs);
   else if (s.mode === "count") {
     banner(c, String(Math.max(1, Math.ceil(s.countLeft))));
@@ -1634,10 +1932,10 @@ function paintRobot(
   holding: boolean,
   carry: number,
   carryMax: number,
+  red: boolean,
   boosting: boolean,
-  cool: number,
 ) {
-  const bob = Math.sin(time * 3.1 + r.hover) * 5;
+  const bob = (r.rail ? 0.2 : 1) * Math.sin(time * 3.1 + r.hover) * 5;
   const y = r.y + bob;
   if (boosting) {
     const ang = Math.atan2(r.vy, r.vx) + Math.PI;
@@ -1659,21 +1957,6 @@ function paintRobot(
   c.lineWidth = r.controlled ? 4 : 2;
   c.strokeStyle = r.controlled ? "#ffe36b" : "rgba(255,255,255,0.9)";
   c.stroke();
-  if (r.role !== "goalie") {
-    for (let i = 0; i < 3; i++) {
-      c.fillStyle = i < r.lives ? "#ff7a66" : "rgba(255,255,255,0.28)";
-      c.beginPath();
-      c.arc(r.x - 10 + i * 10, y - 30, 3.2, 0, Math.PI * 2);
-      c.fill();
-    }
-  }
-  if (cool > 0) {
-    c.strokeStyle = "rgba(255,120,90,0.9)";
-    c.lineWidth = 3;
-    c.beginPath();
-    c.arc(r.x, y, 25, -Math.PI / 2, -Math.PI / 2 + (cool / PULSE_CD) * Math.PI * 2);
-    c.stroke();
-  }
   if (r.hurt > 0) {
     c.strokeStyle = `rgba(255,255,255,${r.hurt / 0.35})`;
     c.lineWidth = 3;
@@ -1682,10 +1965,17 @@ function paintRobot(
     c.stroke();
   }
   if (holding) {
+    if (red) {
+      c.beginPath();
+      c.arc(r.x, y, 32, 0, Math.PI * 2);
+      c.strokeStyle = `rgba(255, 36, 36, ${0.45 + 0.45 * Math.sin(time * 18)})`;
+      c.lineWidth = 6;
+      c.stroke();
+    }
     c.beginPath();
     c.arc(r.x, y, 27, -Math.PI / 2, -Math.PI / 2 + (carry / carryMax) * Math.PI * 2);
-    c.strokeStyle = carry > carryMax * 0.75 ? "#ff6b6b" : "#ffe36b";
-    c.lineWidth = 3;
+    c.strokeStyle = red ? "#ff2d2d" : "#ffe36b";
+    c.lineWidth = red ? 5 : 3;
     c.stroke();
   }
   c.fillStyle = "#071018";
