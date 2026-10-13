@@ -1,4 +1,4 @@
-export type Perk = "bank" | "sticky" | "afterburner" | "glue" | "heavy" | "pickup";
+export type Perk = "bank" | "sticky" | "afterburner" | "glue" | "heavy" | "pickup" | "touch";
 
 export type SkaterRatings = {
   speed: number;
@@ -140,17 +140,20 @@ export const PERK_LABEL: Record<Perk, string> = {
   glue: "Glue",
   heavy: "Heavy",
   pickup: "Pickup",
+  touch: "Touch",
 };
 
-export const PERKS: Perk[] = ["bank", "sticky", "afterburner", "glue", "heavy", "pickup"];
+export const PERKS: Perk[] = ["bank", "sticky", "afterburner", "glue", "heavy", "pickup", "touch"];
 
 const SKATER_NAMES = [
   "Vex", "Quill", "Nox", "Juno", "Kite", "Rook", "Ion", "Hex", "Lumen", "Nimbus",
   "Torque", "Wisp", "Cinder", "Halo", "Flint", "Nova", "Rift", "Sable", "Tilt", "Umbra",
-  "Vesper", "Wedge", "Axle", "Drift", "Echo", "Frost", "Glint", "Hush",
+  "Vesper", "Wedge", "Axle", "Drift", "Echo", "Frost", "Glint", "Hush", "Quasar", "Byte",
+  "Comet", "Dagger", "Ember", "Flux", "Grit", "Hawk", "Iris", "Jolt", "Knox", "Lynx",
+  "Mica", "Onyx", "Pike", "Relic", "Sol", "Thorn", "Vega", "Brine",
 ];
 
-const GOALIE_NAMES = ["Vault", "Kepler", "Moor", "Nyx", "Prism", "Orb"];
+const GOALIE_NAMES = ["Vault", "Kepler", "Moor", "Nyx", "Prism", "Orb", "Sentry", "Talon", "Umber", "Warden", "Quell", "Harbor", "Cipher", "Ione", "Joss", "Beryl"];
 
 export function overallSkater(r: SkaterRatings) {
   const score =
@@ -185,6 +188,13 @@ export function pace(n: number) {
   return 0.78 + (Math.min(11, Math.max(1, n)) - 1) * 0.056;
 }
 
+/** One life, unless toughness is 11 or the Heavy perk grants a second. */
+export function lifeCount(card: PlayerCard) {
+  if (card.kind !== "skater") return 1;
+  if (card.ratings.toughness >= 11 || card.perks.includes("heavy")) return 2;
+  return 1;
+}
+
 export type TeamGrades = {
   overall: number;
   offense: number;
@@ -192,12 +202,13 @@ export type TeamGrades = {
   iq: number;
 };
 
-/** Starters share the top weight. The first sub still matters; the last one barely does. */
+/** Starters play. Subs are spares, in the order they come in. Reserves do not dress. */
 export function slotWeight(index: number) {
   if (index <= 3) return 1;
-  if (index === 4) return 0.62;
-  if (index === 5) return 0.38;
-  return 0.2;
+  if (index === 4) return 0.28;
+  if (index === 5) return 0.12;
+  if (index === 6) return 0.05;
+  return 0;
 }
 
 export function teamShape(cards: (PlayerCard | null)[]): TeamShape {
@@ -275,10 +286,26 @@ export function habitLine(h: TeamHabits) {
   return bits.length ? `Likes ${bits.join(", ")}` : "No strong habit";
 }
 
+export type Lean = "attack" | "defense" | "mix" | "acrobat" | "mechanical";
+
 export function leanOf(styles: Styles): "attack" | "defense" | "mix" {
   if (styles.aggressive >= 61) return "attack";
   if (styles.aggressive <= 39) return "defense";
   return "mix";
+}
+
+/** Acrobat goalies live on speed and agility. Mechanical goalies live on the read, the rebound, and the poke. */
+export function goalieLean(ratings: GoalieRatings): "acrobat" | "mechanical" | "mix" {
+  const fly = (ratings.speed + ratings.agility) / 2;
+  const mech = (ratings.iq + ratings.rebound + ratings.composure + ratings.poke) / 4;
+  if (fly >= mech + 1.35) return "acrobat";
+  if (mech >= fly + 1.05) return "mechanical";
+  return "mix";
+}
+
+export function playerLean(card: { kind: "skater" | "goalie"; styles: Styles; ratings: SkaterRatings | GoalieRatings }): Lean {
+  if (card.kind === "goalie") return goalieLean(card.ratings as GoalieRatings);
+  return leanOf(card.styles);
 }
 
 export function fitHint(card: SkaterCard) {
@@ -287,54 +314,70 @@ export function fitHint(card: SkaterCard) {
   return "Fits anywhere";
 }
 
-export function makePool(seed = 7) {
-  const rng = mulberry32(seed);
-  const skaters: SkaterCard[] = SKATER_NAMES.slice(0, 16).map((name, i) => {
-    const ratings: SkaterRatings = {
-      speed: rollStat(rng),
-      agility: rollStat(rng),
-      shot: rollStat(rng),
-      attack: rollStat(rng),
-      defense: rollStat(rng),
-      handling: rollStat(rng),
-      toughness: rollStat(rng),
-    };
+const SKATER_KEYS = ["speed", "agility", "shot", "attack", "defense", "handling", "toughness"] as const;
+const GOALIE_KEYS = ["speed", "agility", "iq", "rebound", "composure", "poke"] as const;
+const OVR_BANDS = [30, 40, 50, 60, 70, 80, 90];
+
+export function makePool(seed = Math.floor(Math.random() * 0x7fffffff)) {
+  const rng = mulberry32(seed >>> 0);
+  const skaterTargets = bandTargets(rng, 3);
+  const goalieTargets = OVR_BANDS.flatMap((floor) => [floor === 90 ? 99 : pickInBand(rng, floor), pickInBand(rng, floor)]);
+  const skaters: SkaterCard[] = skaterTargets.map((target, i) => {
+    const ratings = ratingsFor(target, rng, SKATER_KEYS, overallSkater);
     return {
-      id: `s${i}`,
-      name,
+      id: `s${seed}-${i}`,
+      name: SKATER_NAMES[i] ?? `Skater ${i + 1}`,
       kind: "skater",
       ratings,
       overall: overallSkater(ratings),
       styles: rollStyles(rng),
-      perks: rollPerks(rng),
+      perks: perksFor(rng, overallSkater(ratings)),
       hue: Math.floor(rng() * 360),
       visor: i % 3,
       antenna: i % 4,
     };
   });
-  const goalies: GoalieCard[] = GOALIE_NAMES.slice(0, 4).map((name, i) => {
-    const ratings: GoalieRatings = {
-      speed: rollStat(rng),
-      agility: rollStat(rng),
-      iq: rollStat(rng),
-      rebound: rollStat(rng),
-      composure: rollStat(rng),
-      poke: rollStat(rng),
-    };
+  const goalies: GoalieCard[] = goalieTargets.map((target, i) => {
+    const ratings = ratingsFor(target, rng, GOALIE_KEYS, overallGoalie);
     return {
-      id: `g${i}`,
-      name,
+      id: `g${seed}-${i}`,
+      name: GOALIE_NAMES[i] ?? `Keeper ${i + 1}`,
       kind: "goalie",
       ratings,
       overall: overallGoalie(ratings),
       styles: rollStyles(rng),
-      perks: rollPerks(rng).slice(0, 2),
-      hue: 190 + i * 28,
+      perks: perksFor(rng, overallGoalie(ratings)).slice(0, 2),
+      hue: Math.floor(rng() * 360),
       visor: i % 3,
       antenna: 0,
     };
   });
   return { skaters, goalies };
+}
+
+function bandTargets(rng: () => number, studs: number) {
+  const targets = OVR_BANDS.flatMap((floor) => Array.from({ length: 5 }, () => (floor === 90 ? 90 + Math.floor(rng() * 9) : pickInBand(rng, floor))));
+  for (let i = 0; i < studs; i++) targets.push(99);
+  return targets;
+}
+
+function pickInBand(rng: () => number, floor: number) {
+  return floor + Math.floor(rng() * 10);
+}
+
+function ratingsFor<T extends SkaterRatings | GoalieRatings>(target: number, rng: () => number, keys: readonly (keyof T)[], overall: (ratings: T) => number): T {
+  const ratings = {} as T;
+  const mean = clamp(Math.round(target / 9.05), 1, 11);
+  for (const key of keys) ratings[key] = clamp(mean + Math.floor(rng() * 5) - 2, 1, 11) as T[keyof T];
+  let guard = 0;
+  while (guard++ < 120 && overall(ratings) !== target) {
+    const ovr = overall(ratings);
+    const movable = keys.filter((key) => (ovr < target ? (ratings[key] as number) < 11 : (ratings[key] as number) > 1));
+    if (!movable.length) break;
+    const key = movable[Math.floor(rng() * movable.length)];
+    ratings[key] = ((ratings[key] as number) + (ovr < target ? 1 : -1)) as T[keyof T];
+  }
+  return ratings;
 }
 
 export function rollHabits(seed: number): TeamHabits {
@@ -343,24 +386,38 @@ export function rollHabits(seed: number): TeamHabits {
   return { bounce: one(), earlyShot: one(), crash: one(), patient: one(), risk: one() };
 }
 
-export function dealRandom(skaters: SkaterCard[], goalies: GoalieCard[], stars: boolean) {
-  const sk = [...skaters].sort((a, b) => (stars ? b.overall - a.overall : Math.random() - 0.5));
-  const gl = [...goalies].sort((a, b) => (stars ? b.overall - a.overall : Math.random() - 0.5));
-  const homeSk = stars ? sk.slice(0, 6) : sk.slice(0, 6);
-  const awaySk = stars ? sk.slice(-6) : sk.slice(6, 12);
+export type DealBias = "random" | "stars" | "weak" | "duel";
+
+export function dealRandom(skaters: SkaterCard[], goalies: GoalieCard[], stars: boolean | DealBias = "random") {
+  const mode: DealBias = stars === true ? "stars" : stars === false ? "random" : stars;
+  const sk = [...skaters];
+  const gl = [...goalies];
+  if (mode === "random") {
+    shuffle(sk);
+    shuffle(gl);
+  } else {
+    sk.sort((a, b) => b.overall - a.overall || a.name.localeCompare(b.name));
+    gl.sort((a, b) => b.overall - a.overall || a.name.localeCompare(b.name));
+  }
+  const homeSk = mode === "weak" ? sk.slice(-6) : mode === "duel" ? snake(sk.slice(0, 12), true) : sk.slice(0, 6);
+  const awaySk = mode === "stars" ? sk.slice(-6) : mode === "weak" ? sk.slice(0, 6) : mode === "duel" ? snake(sk.slice(0, 12), false) : sk.slice(6, 12);
+  const homeGl = mode === "weak" ? gl[gl.length - 1] : gl[0];
+  const awayGl = mode === "weak" ? gl[0] : mode === "stars" ? gl[gl.length - 1] : gl[1] ?? gl[0];
   return {
-    home: { ice: [homeSk[0], homeSk[1], homeSk[2], gl[0]] as PlayerCard[], bench: homeSk.slice(3, 6) },
-    away: { ice: [awaySk[0], awaySk[1], awaySk[2], gl[stars ? gl.length - 1 : 1]] as PlayerCard[], bench: awaySk.slice(3, 6) },
+    home: { ice: [homeSk[0], homeSk[1], homeSk[2], homeGl] as PlayerCard[], bench: homeSk.slice(3, 6) },
+    away: { ice: [awaySk[0], awaySk[1], awaySk[2], awayGl] as PlayerCard[], bench: awaySk.slice(3, 6) },
   };
 }
 
-function rollStat(rng: () => number) {
-  const a = 2 + Math.floor(rng() * 7);
-  const b = 2 + Math.floor(rng() * 7);
-  let n = Math.round((a + b) / 2);
-  if (rng() < 0.08) n += 2;
-  if (rng() < 0.04) n = 11;
-  return Math.min(11, Math.max(1, n));
+function snake<T>(ranked: T[], home: boolean) {
+  return ranked.filter((_, index) => (index % 4 === 0 || index % 4 === 3) === home);
+}
+
+function shuffle<T>(list: T[]) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
 }
 
 function rollStyles(rng: () => number): Styles {
@@ -368,9 +425,9 @@ function rollStyles(rng: () => number): Styles {
   return { aggressive: one(), shooter: one(), wide: one(), physical: one() };
 }
 
-function rollPerks(rng: () => number): Perk[] {
+function perksFor(rng: () => number, overall: number): Perk[] {
   const roll = rng();
-  const count = roll < 0.38 ? 0 : roll < 0.72 ? 1 : roll < 0.92 ? 2 : 3;
+  const count = overall >= 97 ? 2 + (roll < 0.55 ? 1 : 0) : overall < 40 ? (roll < 0.8 ? 0 : 1) : roll < 0.38 ? 0 : roll < 0.72 ? 1 : roll < 0.92 ? 2 : 3;
   const bag = [...PERKS];
   const out: Perk[] = [];
   for (let i = 0; i < count; i++) {

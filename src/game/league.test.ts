@@ -7,12 +7,14 @@ import {
   continuePhase,
   careerTotals,
   createCareer,
+  clubPrestige,
   currentMatch,
   firstOpenSlot,
   freeAgents,
   maxYears,
   payroll,
   playerById,
+  quote,
   releasePlayer,
   rosterProblem,
   signPlayer,
@@ -97,7 +99,12 @@ test("a career can finish a season and open the next", () => {
   }
   assert.equal(save.phase, "market");
   for (let tier = 0; tier < 8; tier++) assert.equal(standings(save, tier).length, 10);
-  assert.ok(save.clubs.every((club) => club.history.length === 1 && club.history[0].year === opening));
+  for (const club of save.clubs) {
+    const line = club.history.find((item) => item.year === opening);
+    assert.ok(line, club.name);
+    if (club.user) assert.equal(club.history.length, 1);
+    else assert.ok(club.history.length > 1, `${club.name} should keep its record`);
+  }
   for (let tier = 0; tier < 7; tier++) {
     const played = save.clubs.filter((club) => club.history.some((line) => line.year === opening && line.tier === tier));
     const champ = played.find((club) => club.history.some((line) => line.year === opening && line.tier === tier && line.playoff === "Champion"));
@@ -157,6 +164,90 @@ test("a career can finish a season and open the next", () => {
   assert.equal(save.clubs.filter((c) => c.tier === userClub(save).tier).length, 10);
   const played = save.players.find((player) => player.season.games > 0 || player.history.some((line) => line.year === opening));
   assert.ok(played);
+});
+
+test("prestige follows the league, and a quote stays near the asking price", () => {
+  const save = createCareer({ name: "Glass Orbits", tag: "GLS", kit: { primary: 188, secondary: 24, accent: 48 } }, 11);
+  const dust = clubPrestige(save, save.userClubId);
+  const crown = save.clubs.filter((club) => club.tier === 7).map((club) => clubPrestige(save, club.id));
+  assert.ok(crown.every((score) => score > dust + 25));
+  assert.equal(userClub(save).history.length, 0);
+  assert.ok(dust <= 8, `user prestige ${dust}`);
+  for (let tier = 0; tier < 8; tier++) {
+    const mates = save.clubs.filter((club) => club.tier === tier && !club.user).map((club) => clubPrestige(save, club.id));
+    const spread = Math.max(...mates) - Math.min(...mates);
+    assert.ok(spread >= 6, `tier ${tier} prestige spread ${spread}`);
+    if (tier === 0) assert.ok(dust <= Math.min(...mates));
+  }
+  const me = userClub(save);
+  for (const player of freeAgents(save)) {
+    const offer = quote(save, player.id);
+    assert.ok(offer);
+    assert.ok(Math.abs(offer.adjust) <= 0.18001);
+    const base = Math.max(4, Math.round(offer.demand * (1 + offer.adjust)));
+    assert.equal(offer.wage, Math.max(4, Math.round(base * offer.factor)));
+    const one = quote(save, player.id, 1);
+    const five = quote(save, player.id, 5);
+    assert.ok(one && five);
+    assert.ok(one.wage >= offer.wage);
+    assert.ok(player.potential);
+    for (const key of Object.keys(player.ratings)) {
+      const now = (player.ratings as Record<string, number>)[key];
+      const cap = (player.potential as Record<string, number>)[key];
+      assert.ok(cap >= now);
+    }
+  }
+  const player = freeAgents(save)[0];
+  const original = player.planet;
+  player.planet = me.planet;
+  const home = quote(save, player.id)!.wage;
+  player.planet = "Nowhere";
+  const away = quote(save, player.id)!.wage;
+  player.planet = original;
+  assert.ok(home <= away);
+  for (const club of save.clubs) {
+    if (club.user) continue;
+    const at = (index: number) => playerById(save, club.roster[index]);
+    const starters = [0, 1, 2].map(at);
+    const subs = [4, 5, 6].map(at);
+    assert.ok(starters.every((player) => player?.kind === "skater"));
+    assert.ok(subs.every((player) => player?.kind === "skater"));
+    const sAvg = starters.reduce((sum, player) => sum + player!.overall, 0) / 3;
+    const bAvg = subs.reduce((sum, player) => sum + player!.overall, 0) / 3;
+    assert.ok(sAvg >= bAvg + 6, `${club.name} starters ${sAvg.toFixed(1)} subs ${bAvg.toFixed(1)}`);
+    assert.ok(sAvg - bAvg < 32, `${club.name} bench fell off too far`);
+    assert.ok(Math.min(...starters.map((player) => player!.overall)) >= Math.max(...subs.map((player) => player!.overall)));
+  }
+});
+
+test("a player signed this window can be released without a buyout", () => {
+  let save = createCareer({ name: "Glass Orbits", tag: "GLS", kit: { primary: 188, secondary: 24, accent: 48 } }, 3);
+  const pick = freeAgents(save)
+    .filter((player) => player.kind === "skater")
+    .sort((a, b) => a.overall - b.overall)[0];
+  const slot = firstOpenSlot(save, pick.id);
+  save = signPlayer(save, pick.id, slot, 2);
+  const drafted = userClub(save).budget;
+  save = releasePlayer(save, pick.id);
+  assert.equal(userClub(save).budget, drafted);
+  assert.equal(userClub(save).roster.includes(pick.id), false);
+
+  save = signPlayer(save, pick.id, slot, 2);
+  save.phase = "market";
+  const fresh = userClub(save).budget;
+  save = releasePlayer(save, pick.id);
+  assert.equal(userClub(save).budget, fresh);
+
+  save = signPlayer(save, pick.id, slot, 2);
+  save.phase = "market";
+  const deal = save.contracts.find((contract) => contract.playerId === pick.id);
+  assert.ok(deal);
+  deal.signedInWindow = false;
+  const wage = deal.wage;
+  const held = userClub(save).budget;
+  save = releasePlayer(save, pick.id);
+  assert.equal(userClub(save).budget, held - Math.round(wage * 0.5));
+  assert.equal(userClub(save).roster.includes(pick.id), false);
 });
 
 function meanOverall(save: ReturnType<typeof createCareer>, tier: number) {

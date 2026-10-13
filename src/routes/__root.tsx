@@ -17,6 +17,7 @@ export const Route = createRootRoute({
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: `${assetBase}favicon.svg` },
+      { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Rajdhani:wght@500;600;700&display=swap" },
       { rel: "stylesheet", href: appCss },
       { rel: "manifest", href: `${assetBase}__grok/manifest.webmanifest` },
       { rel: "apple-touch-icon", href: `${assetBase}__grok/icon-180.png` },

@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { TeamLeaders, statLine } from "@/components/MatchViews";
+import { PlayerMark } from "@/components/PlayerMark";
 import { TeamLogo } from "@/components/TeamLogo";
 import {
   clubById,
   clubGrades,
+  clubPrestige,
   formatPct,
   leaderboard,
   leagueName,
@@ -93,7 +95,7 @@ export function StatsBook({ save, onOpen }: { save: Save; onOpen: (id: string) =
               <p className="text-[11px] text-[#8fb0c8]">{save.phase === "sign" ? "No season has been played yet." : "This season"}</p>
             )}
           </div>
-          <LeaderTable kind={kind} rows={ordered} sort={activeSort} onSort={setSort} onOpen={onOpen} />
+          <LeaderTable save={save} kind={kind} rows={ordered} sort={activeSort} onSort={setSort} onOpen={onOpen} />
         </>
       )}
     </div>
@@ -101,12 +103,14 @@ export function StatsBook({ save, onOpen }: { save: Save; onOpen: (id: string) =
 }
 
 function LeaderTable({
+  save,
   kind,
   rows,
   sort,
   onSort,
   onOpen,
 }: {
+  save: Save;
   kind: Kind;
   rows: LeaderRow[];
   sort: string;
@@ -147,19 +151,26 @@ function LeaderTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
+          {rows.map((row) => {
+            const player = playerById(save, row.id);
+            const kit = save.clubs.find((club) => club.name === row.club)?.kit ?? null;
+            return (
             <tr key={row.id} className="border-t border-white/5 odd:bg-[#0c1424]">
               <td className="px-3 py-2">
-                <button type="button" onClick={() => onOpen(row.id)} className="text-left">
-                  <span className="block font-semibold text-white">{row.name}{row.retired ? " · ret" : ""}</span>
-                  <span className="block text-[11px] text-[#8fb0c8]">{row.club} · {row.form.games} GP</span>
+                <button type="button" onClick={() => onOpen(row.id)} className="flex items-center gap-2 text-left">
+                  <PlayerMark name={row.name} kit={kit} hue={player?.hue} size={26} />
+                  <span>
+                    <span className="block font-semibold text-white">{row.name}{row.retired ? " · ret" : ""}</span>
+                    <span className="block text-[11px] text-[#8fb0c8]">{row.club} · {row.form.games} GP</span>
+                  </span>
                 </button>
               </td>
               {columns.map(([key]) => (
                 <td key={key} className="px-2 py-2">{cell(row.form, key)}</td>
               ))}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -187,8 +198,11 @@ function TeamList({ save, tier, onOpen }: { save: Save; tier: number | null; onO
               <span className="block text-[11px] text-[#9eb6cc]">{gf} GF · {blasts} blastoffs</span>
             </span>
             <span className="text-right">
-              <span className="block text-[10px] font-semibold tracking-wide text-[#8fb0c8]">OVR</span>
-              <span className="block text-xl font-black leading-none text-[#ffe36b]">{grades ? grades.overall : "—"}</span>
+              <span className="block text-[10px] font-semibold tracking-wide text-[#8fb0c8]">OVR · PST</span>
+              <span className="block text-xl font-black leading-none text-[#ffe36b]">
+                {grades ? grades.overall : "—"}
+                <span className="ml-1 text-sm text-[#d7c6ff]">{clubPrestige(save, club.id)}</span>
+              </span>
             </span>
           </button>
         );
@@ -205,7 +219,7 @@ function TeamDossier({ save, clubId, onBack, onOpen }: { save: Save; clubId: str
   const place = live ? standings(save, club.tier).findIndex((row) => row.id === club.id) + 1 : 0;
   const history = [...club.history].reverse();
   return (
-    <section className="rounded-2xl border border-white/10 bg-[#0c1424] p-3">
+    <section className="glass rounded-2xl p-3">
       <button type="button" onClick={onBack} className="text-sm font-semibold text-[#8fd4ff]">
         All teams
       </button>
@@ -218,7 +232,7 @@ function TeamDossier({ save, clubId, onBack, onOpen }: { save: Save; clubId: str
       </div>
       {grades ? (
         <div className="mt-3">
-          <TeamRating overall={grades.overall} offense={grades.offense} defense={grades.defense} iq={grades.iq} />
+          <TeamRating overall={grades.overall} offense={grades.offense} defense={grades.defense} iq={grades.iq} prestige={clubPrestige(save, club.id)} />
         </div>
       ) : (
         <p className="mt-3 text-xs text-[#8fb0c8]">No rating until the roster is filled.</p>
@@ -270,7 +284,8 @@ function TeamDossier({ save, clubId, onBack, onOpen }: { save: Save; clubId: str
           if (!player) return null;
           return (
             <button key={id} type="button" onClick={() => onOpen(player.id)} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1 text-left text-sm text-white hover:bg-white/5">
-              <span className="min-w-0 truncate">{player.name}</span>
+              <PlayerMark name={player.name} kit={club.kit} size={24} />
+              <span className="min-w-0 flex-1 truncate">{player.name}</span>
               <span className="shrink-0 text-[11px] text-[#9eb6cc]">{statLine(player)}</span>
               <span className="w-7 text-right font-black text-[#ffe36b]">{player.overall}</span>
             </button>
@@ -340,13 +355,19 @@ function YearCard({
   );
 }
 
-export function TeamRating({ overall, offense, defense, iq }: { overall: number; offense: number; defense: number; iq: number }) {
+export function TeamRating({ overall, offense, defense, iq, prestige }: { overall: number; offense: number; defense: number; iq: number; prestige?: number }) {
   return (
     <div className="flex items-end gap-3">
       <div>
         <p className="text-[10px] font-semibold tracking-[0.14em] text-[#8fb0c8]">OVR</p>
         <p className="text-2xl font-black leading-none text-[#ffe36b]">{overall}</p>
       </div>
+      {typeof prestige === "number" ? (
+        <div>
+          <p className="text-[10px] font-semibold tracking-[0.14em] text-[#8fb0c8]">PST</p>
+          <p className="text-2xl font-black leading-none text-[#d7c6ff]">{prestige}</p>
+        </div>
+      ) : null}
       <div className="grid flex-1 grid-cols-3 gap-2">
         <Meter label="Off" value={offense} />
         <Meter label="Def" value={defense} />

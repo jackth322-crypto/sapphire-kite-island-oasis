@@ -4,17 +4,21 @@ import { MainMenu, TeamCreator } from "@/components/FrontDoor";
 import { LeagueOffice } from "@/components/LeagueOffice";
 import { FinalWhistle } from "@/components/MatchViews";
 import { RosterPicker } from "@/components/RosterPicker";
+import { RinkBackdrop } from "@/components/RinkBackdrop";
 import {
   clearCareer,
   createCareer,
   correctPromotion,
+  listSlots,
   loadCareer,
   playCurrent,
   saveCareer,
   type MatchSheet,
   type Save,
+  type SlotId,
 } from "@/game/league";
 import { mountSpaceHockey } from "@/game/spaceHockey";
+import { armSfx, setBed } from "@/game/sfx";
 import type { Matchup } from "@/game/roster";
 
 export const Route = createFileRoute("/")({ component: Home });
@@ -22,14 +26,25 @@ export const Route = createFileRoute("/")({ component: Home });
 type View = "menu" | "free" | "create" | "league" | "rink";
 
 function Home() {
-  const [save, setSave] = useState<Save | null>(() => loadCareer());
+  const [slots, setSlots] = useState(listSlots);
+  const slotRef = useRef<SlotId>(1);
+  const [save, setSave] = useState<Save | null>(null);
   const [view, setView] = useState<View>("menu");
   const [match, setMatch] = useState<Matchup | null>(null);
   const [leagueMatch, setLeagueMatch] = useState(false);
+  const [freeKey, setFreeKey] = useState(0);
   const [finished, setFinished] = useState(false);
   const saveRef = useRef(save);
   saveRef.current = save;
   const applied = useRef(false);
+
+  useEffect(() => armSfx(), []);
+
+  useEffect(() => {
+    const live = view === "rink" || (view === "free" && !!match);
+    const menu = view === "menu" || view === "create" || view === "league" || (view === "free" && !match);
+    setBed(live ? "crowd" : menu ? "menu" : "off");
+  }, [view, match]);
 
   useEffect(() => {
     if (!save) return;
@@ -39,21 +54,45 @@ function Home() {
 
   function commit(next: Save) {
     setSave(next);
-    saveCareer(next);
+    saveCareer(next, slotRef.current);
+    setSlots(listSlots());
+  }
+
+  function openSlot(id: SlotId) {
+    slotRef.current = id;
   }
 
   return (
     <main className="relative h-dvh w-full overflow-hidden bg-[#070b18]">
+      {view === "rink" || view === "create" || (view === "free" && match) ? null : <RinkBackdrop />}
       {view === "menu" ? (
         <MainMenu
-          hasSave={!!save}
+          slots={slots}
           onFree={() => {
+            setFreeKey((key) => key + 1);
             setMatch(null);
             setLeagueMatch(false);
             setView("free");
           }}
-          onNew={() => setView("create")}
-          onContinue={() => save && setView("league")}
+          onNew={(id) => {
+            openSlot(id);
+            setView("create");
+          }}
+          onContinue={(id) => {
+            const loaded = loadCareer(id);
+            if (!loaded) {
+              setSlots(listSlots());
+              return;
+            }
+            openSlot(id);
+            setSave(loaded);
+            setView("league");
+          }}
+          onDelete={(id) => {
+            clearCareer(id);
+            if (slotRef.current === id) setSave(null);
+            setSlots(listSlots());
+          }}
         />
       ) : null}
       {view === "create" ? (
@@ -66,17 +105,10 @@ function Home() {
           }}
         />
       ) : null}
-      {view === "free" && !match ? (
-        <>
-          <button
-            type="button"
-            onClick={() => setView("menu")}
-            className="absolute bottom-4 left-4 z-10 rounded-full border border-white/20 bg-[#070b18]/80 px-3 py-1 text-xs font-semibold text-[#d5e8ff]"
-          >
-            Menu
-          </button>
-          <RosterPicker onPlay={(next) => setMatch(next)} />
-        </>
+      {view === "free" ? (
+        <div className={match ? "hidden" : "h-full"}>
+          <RosterPicker key={freeKey} onMenu={() => setView("menu")} onPlay={(next) => setMatch(next)} />
+        </div>
       ) : null}
       {view === "free" && match ? (
         <Rink
@@ -89,7 +121,10 @@ function Home() {
         <LeagueOffice
           save={save}
           onChange={commit}
-          onMenu={() => setView("menu")}
+          onMenu={() => {
+            setSlots(listSlots());
+            setView("menu");
+          }}
           onPlay={(next) => {
             applied.current = false;
             setFinished(false);
@@ -111,18 +146,6 @@ function Home() {
             setFinished(true);
           }}
         />
-      ) : null}
-      {view === "menu" && save ? (
-        <button
-          type="button"
-          onClick={() => {
-            clearCareer();
-            setSave(null);
-          }}
-          className="absolute bottom-4 left-4 text-xs font-semibold text-[#6e8498]"
-        >
-          Abandon saved career
-        </button>
       ) : null}
     </main>
   );

@@ -3,6 +3,7 @@ import {
   hueGap,
   overallGoalie,
   overallSkater,
+  slotWeight,
   slotsClash,
   teamGrades,
   type GoalieRatings,
@@ -34,8 +35,11 @@ const PO_WIN = [10, 16, 24, 34, 48, 66, 90, 120];
 const CUP_BONUS = [22, 34, 50, 72, 100, 140, 190, 250];
 const UNI_WIN = [18, 26, 36, 48, 64, 84, 110, 140];
 const UNI_BONUS = [80, 110, 150, 200, 260, 330, 420, 520];
+const TERM_FACTOR = [0, 1.16, 1.08, 1, 0.93, 0.86];
+const PLANETS = ["Vesper", "Kite", "Marrow", "Lumen", "Brine", "Sable", "Quill", "Nimbus", "Cairn", "Halo", "Dune", "Orbis"];
 
-const SAVE_KEY = "space-hockey-career";
+const SLOT_KEY = "space-hockey-slot-";
+const LEGACY_KEY = "space-hockey-career";
 
 export type Phase = "sign" | "season" | "playoffs" | "relegation" | "universe" | "market";
 
@@ -68,6 +72,9 @@ export type LeaguePlayer = PlayerCard & {
   season: SeasonForm;
   awards: Award[];
   retired: boolean;
+  planet: string;
+  potential: SkaterRatings | GoalieRatings;
+  prior: SkaterRatings | GoalieRatings | null;
 };
 
 export type Contract = {
@@ -75,6 +82,7 @@ export type Contract = {
   clubId: string;
   wage: number;
   seasonsLeft: number;
+  signedInWindow: boolean;
 };
 
 export type ClubYear = {
@@ -119,6 +127,9 @@ export type Club = {
   universeChamp: boolean;
   history: ClubYear[];
   ledger: ClubLedger | null;
+  planet: string;
+  rights: string[];
+  unretained: string[];
 };
 
 export type BoxLine = {
@@ -218,7 +229,19 @@ export type UserMatch = {
 
 type Rng = { next: () => number; seed: () => number };
 
-const SLOT_NAMES = ["Attack", "Mid", "Defense", "Goalie", "Sub 1", "Sub 2", "Sub 3"];
+const SLOT_NAMES = ["Attack", "Mid", "Defense", "Goalie", "Sub 1", "Sub 2", "Sub 3", "Reserve 1", "Reserve 2", "Reserve 3"];
+const ACTIVE_SLOTS = 7;
+
+export type SlotId = 1 | 2 | 3;
+
+export type CareerSlot = {
+  id: SlotId;
+  occupied: boolean;
+  name: string;
+  league: string;
+  season: number;
+  phase: string;
+};
 
 export function leagueName(tier: number) {
   return LEAGUE_NAME[clamp(tier, 0, 7)] ?? LEAGUE_NAME[0];
@@ -232,46 +255,101 @@ export function rungLabel(tier: number) {
 
 export function playerWage(overall: number) {
   const o = Math.max(42, Math.min(99, overall));
-  return Math.round(8 + ((o - 42) / 7) ** 2.15 * 5);
+  const core = 8 + ((o - 42) / 7) ** 2.2 * 5;
+  const elite = o <= 82 ? 0 : ((o - 82) / 5) ** 1.65 * 22;
+  return Math.round(core + elite);
 }
 
-export function loadCareer(): Save | null {
+export function listSlots(): CareerSlot[] {
+  return ([1, 2, 3] as SlotId[]).map((id) => {
+    const save = readSlot(id);
+    const club = save?.clubs.find((item) => item.id === save.userClubId);
+    if (!save || !club) return { id, occupied: false, name: "", league: "", season: 0, phase: "" };
+    return { id, occupied: true, name: club.name, league: leagueName(club.tier), season: save.season, phase: phaseLabel(save.phase) };
+  });
+}
+
+export function loadCareer(slot: SlotId = 1): Save | null {
+  return readSlot(slot);
+}
+
+export function saveCareer(save: Save, slot: SlotId = 1) {
   try {
-    const raw = localStorage.getItem(SAVE_KEY);
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(SLOT_KEY + slot, JSON.stringify(save));
+  } catch {
+    /* ignore a full or blocked store */
+  }
+}
+
+export function clearCareer(slot: SlotId = 1) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.removeItem(SLOT_KEY + slot);
+    if (slot === 1) localStorage.removeItem(LEGACY_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function phaseLabel(phase: Phase) {
+  if (phase === "sign" || phase === "market") return "Market";
+  if (phase === "season") return "Season";
+  if (phase === "playoffs") return "Playoffs";
+  if (phase === "relegation") return "Relegation";
+  return "Universe";
+}
+
+function readSlot(slot: SlotId): Save | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    let raw = localStorage.getItem(SLOT_KEY + slot);
+    if (!raw && slot === 1) raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return null;
     const save = JSON.parse(raw) as Save & { clubs: (Club & { hue?: number })[] };
     if (save?.v !== 1 || !save.userClubId || !Array.isArray(save.clubs)) return null;
-    for (const club of save.clubs) {
-      if (!club.kit && typeof club.hue === "number") club.kit = kitAround(club.hue);
-    }
-    for (const player of save.players ?? []) {
-      player.history = (player.history ?? []).map((line) => ({ ...emptyForm(), ...line }));
-      player.season = { ...emptyForm(), ...player.season };
-      if (!player.awards) player.awards = [];
-      if (player.retired !== true) player.retired = false;
-    }
-    for (const club of save.clubs) {
-      if (!club.history) club.history = [];
-      if (typeof club.blastoffs !== "number") club.blastoffs = 0;
-      if (typeof club.awardCash !== "number") club.awardCash = 0;
-      if (club.ledger === undefined) club.ledger = null;
-    }
-    for (const fixture of save.fixtures ?? []) if (!fixture.box) fixture.box = null;
-    for (const match of save.knockout ?? []) if (!match.box) match.box = null;
-    if (!save.report) save.report = null;
-    repairPromotion(save);
+    normalize(save);
     return save;
   } catch {
     return null;
   }
 }
 
-export function saveCareer(save: Save) {
-  localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+function normalize(save: Save & { clubs: (Club & { hue?: number })[] }) {
+  for (const club of save.clubs) {
+    if (!club.kit && typeof club.hue === "number") club.kit = kitAround(club.hue);
+    if (!club.history) club.history = [];
+    if (typeof club.blastoffs !== "number") club.blastoffs = 0;
+    if (typeof club.awardCash !== "number") club.awardCash = 0;
+    if (club.ledger === undefined) club.ledger = null;
+    if (!club.planet) club.planet = PLANETS[Math.abs(hashCode(club.id)) % PLANETS.length];
+    if (!Array.isArray(club.rights)) club.rights = [];
+    if (!Array.isArray(club.unretained)) club.unretained = [];
+    while (club.roster.length < SLOT_NAMES.length) club.roster.push("");
+    club.roster = club.roster.slice(0, SLOT_NAMES.length);
+  }
+  for (const player of save.players ?? []) {
+    player.history = (player.history ?? []).map((line) => ({ ...emptyForm(), ...line }));
+    player.season = { ...emptyForm(), ...player.season };
+    if (!player.awards) player.awards = [];
+    if (player.retired !== true) player.retired = false;
+    if (!player.planet) player.planet = "Vesper";
+    if (!player.potential) player.potential = { ...player.ratings };
+    if (player.prior === undefined) player.prior = null;
+  }
+  for (const deal of save.contracts ?? []) {
+    if (typeof deal.signedInWindow !== "boolean") deal.signedInWindow = false;
+  }
+  for (const fixture of save.fixtures ?? []) if (!fixture.box) fixture.box = null;
+  for (const match of save.knockout ?? []) if (!match.box) match.box = null;
+  if (!save.report) save.report = null;
+  repairPromotion(save);
 }
 
-export function clearCareer() {
-  localStorage.removeItem(SAVE_KEY);
+function hashCode(text: string) {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0;
+  return h;
 }
 
 export function createCareer(input: { name: string; tag: string; kit: Kit }, seed = Date.now() % 100000): Save {
@@ -295,6 +373,7 @@ export function createCareer(input: { name: string; tag: string; kit: Kit }, see
   };
   const usedNames = new Set<string>();
   const user = blankClub("user", cleanName(input.name), cleanTag(input.tag), input.kit, 0, true);
+  user.planet = PLANETS[Math.floor(rng.next() * PLANETS.length)];
   user.budget = BASE[0];
   user.budgetNote = "Starting purse for the Dust League.";
   usedNames.add(user.name);
@@ -304,10 +383,12 @@ export function createCareer(input: { name: string; tag: string; kit: Kit }, see
     for (let i = 0; i < count; i++) {
       const club = blankClub(serial(save, "c"), clubName(rng, usedNames), "", randomKit(rng), tier, false);
       club.tag = uniqueTag(save, club.name);
+      club.planet = PLANETS[Math.floor(rng.next() * PLANETS.length)];
       club.habits = habitsFrom(rng);
       save.clubs.push(club);
       const mean = TIER_MEAN[tier];
       fillAiRoster(save, rng, club, mean);
+      inventClubHistory(rng, club, opening);
       const pay = payroll(save, club.id);
       club.budget = Math.max(BASE[tier], pay);
       club.budgetNote = "Opening books.";
@@ -482,35 +563,90 @@ export function rosterProblem(save: Save, clubId: string) {
   const club = clubById(save, clubId);
   if (!club) return "Missing club";
   const cards = club.roster.map((id) => (id ? playerById(save, id) : null));
-  if (cards.some((c) => !c)) return "Fill every slot";
+  for (let i = 0; i < ACTIVE_SLOTS; i++) if (!cards[i]) return "Fill every slot";
   if (cards[3]?.kind !== "goalie") return "The goalie slot needs a goalie";
-  if (cards.some((c, i) => i !== 3 && c?.kind === "goalie")) return "Only the goalie slot takes a goalie";
+  if (cards.some((c, i) => i < ACTIVE_SLOTS && i !== 3 && c?.kind === "goalie")) return "Only the goalie slot takes a goalie";
   if (payroll(save, clubId) > club.budget) return "Payroll is over the budget";
   return null;
 }
 
 export function maxYears(player: LeaguePlayer) {
-  return clamp(Math.min(3, 10 - player.seasonsPlayed), 1, 3);
+  return clamp(10 - player.seasonsPlayed, 1, 5);
 }
 
-export function quote(save: Save, playerId: string) {
+export function quote(save: Save, playerId: string, years = 3, slot = -1) {
   const player = playerById(save, playerId);
-  if (!player || contractFor(save, playerId)) return null;
+  if (!player || player.retired || contractFor(save, playerId)) return null;
   const demand = playerWage(player.overall);
-  const bid = bestAiBid(save, player);
-  const wage = Math.max(demand, bid ? bid.wage + 1 : demand);
-  return { demand, wage, bidder: bid?.name ?? "", years: maxYears(player) };
+  const club = userClub(save);
+  const term = clamp(Math.round(years) || 3, 1, 5);
+  let raw = 0;
+  const bits: string[] = [];
+  const care = clamp((player.overall - 50) / 42, 0, 1);
+  const prestigeGap = (preferredPrestige(player.overall) - clubPrestige(save, club.id)) / 80;
+  const prestigeAdj = prestigeGap * 0.22 * care;
+  raw += prestigeAdj;
+  if (prestigeAdj > 0.03 && care > 0.15) bits.push("Wants more prestige");
+  else if (prestigeAdj < -0.03 && care > 0.15) bits.push("Likes the prestige");
+  if (player.planet && club.planet && player.planet === club.planet) {
+    raw -= 0.04;
+    bits.push("Home planet");
+  } else if (player.planet && club.planet) {
+    raw += 0.035;
+    bits.push("Away from home");
+  }
+  const mean = TIER_MEAN[clamp(club.tier, 0, 7)];
+  if (player.overall > mean + 8) {
+    const fit = clamp((player.overall - mean - 8) / 80, 0, 0.1);
+    raw += fit;
+    if (fit > 0.02) bits.push("League beneath them");
+  } else if (player.overall + 14 < mean) {
+    raw -= 0.03;
+    bits.push("Wants the minutes");
+  }
+  const adjust = clamp(raw, -0.18, 0.18);
+  let factor = TERM_FACTOR[term] ?? 1;
+  if (term >= 4 && potentialOverall(player) - player.overall >= 4) factor = Math.max(factor, 0.98);
+  let loyalty = 0;
+  if (slot >= 7) {
+    loyalty -= 0.45;
+    bits.push("Reserve deal");
+  }
+  if (club.rights.includes(player.id)) {
+    loyalty -= 0.28;
+    bits.push("Reserve rights");
+  } else if (club.unretained.includes(player.id)) {
+    loyalty -= 0.1;
+    bits.push("Back with you");
+  }
+  const base = Math.max(4, Math.round(demand * (1 + adjust)));
+  const wage = Math.max(4, Math.round(base * factor * (1 + loyalty)));
+  const cap = slot >= 7 ? Math.min(3, maxYears(player)) : maxYears(player);
+  return {
+    demand,
+    wage,
+    bidder: "",
+    years: cap,
+    adjust,
+    factor,
+    loyalty,
+    reason: bits.length ? bits.join(" · ") : "Standard ask",
+  };
 }
 
 export function canSign(save: Save, playerId: string, slot: number, years: number) {
   if (save.phase !== "sign" && save.phase !== "market") return "The market is closed";
   const player = playerById(save, playerId);
   if (!player) return "No such player";
+  if (player.retired) return "Retired";
   if (contractFor(save, playerId)) return "Already signed";
-  if (!slotOk(player, slot)) return slot === 3 ? "That slot is for a goalie" : "That slot is for a skater";
+  if (slot < 0 || slot >= SLOT_NAMES.length) return "No such slot";
+  if (slot >= 7 && player.seasonsPlayed >= 4) return "Reserves are for players with under 4 years";
+  if (slot >= 7 && years > 3) return "Reserve rights run 3 seasons at most";
+  if (!slotAccepts(player, slot)) return slot === 3 ? "That slot is for a goalie" : "That slot is for a skater";
   const club = userClub(save);
   if (club.roster[slot]) return "That slot is full";
-  const offer = quote(save, playerId);
+  const offer = quote(save, playerId, years, slot);
   if (!offer) return "No offer";
   if (years < 1 || years > offer.years) return "That term is too long";
   if (offer.wage > room(save, club.id)) return "You cannot afford that wage";
@@ -520,12 +656,14 @@ export function canSign(save: Save, playerId: string, slot: number, years: numbe
 export function signPlayer(save: Save, playerId: string, slot: number, years: number) {
   if (canSign(save, playerId, slot, years)) return save;
   const next = clone(save);
-  const offer = quote(next, playerId)!;
+  const offer = quote(next, playerId, years, slot)!;
   const club = userClub(next);
   club.roster[slot] = playerId;
-  next.contracts.push({ playerId, clubId: club.id, wage: offer.wage, seasonsLeft: years });
+  next.contracts.push({ playerId, clubId: club.id, wage: offer.wage, seasonsLeft: years, signedInWindow: true });
+  stripClaims(next, playerId);
   const player = playerById(next, playerId)!;
-  log(next, `Signed ${player.name} for ${offer.wage} cr, ${years} season${years === 1 ? "" : "s"}.`);
+  const where = slot >= 7 ? " into the reserves" : "";
+  log(next, `Signed ${player.name}${where} for ${offer.wage} cr, ${years} season${years === 1 ? "" : "s"}.`);
   return next;
 }
 
@@ -537,27 +675,29 @@ export function autoDraft(save: Save, years = 3): Save {
     if (userClub(next).roster[slot]) continue;
     const kind = slot === 3 ? "goalie" : "skater";
     const pending = slots.filter((index) => index !== slot && !userClub(next).roster[index]);
-    const reserve = cheapestCover(next, pending);
+    const reserve = cheapestCover(next, pending, years);
     const space = room(next, userClub(next).id);
     const pool = freeAgents(next)
       .filter((player) => player.kind === kind)
-      .map((player) => ({ player, wage: quote(next, player.id)?.wage ?? 9999 }))
+      .map((player) => {
+        const term = clamp(years, 1, maxYears(player));
+        return { player, term, wage: quote(next, player.id, term, slot)?.wage ?? 9999 };
+      })
       .filter((row) => row.wage <= space);
     if (!pool.length) continue;
     const capped = pool.filter((row) => row.wage <= space - reserve);
     const choice = capped.length
       ? capped.sort((a, b) => b.player.overall - a.player.overall || b.wage - a.wage)[0]
       : pool.sort((a, b) => a.wage - b.wage)[0];
-    const term = clamp(years, 1, maxYears(choice.player));
-    const signed = signPlayer(next, choice.player.id, slot, term);
+    const signed = signPlayer(next, choice.player.id, slot, choice.term);
     if (signed !== next) next = signed;
   }
   for (let pass = 0; pass < 6; pass++) {
     const space = room(next, userClub(next).id);
     if (space <= 0) break;
-    let best: { held: string; id: string; slot: number; gain: number; spend: number } | null = null;
+    let best: { held: string; id: string; slot: number; gain: number; spend: number; term: number } | null = null;
     const roster = userClub(next).roster;
-    for (let slot = 0; slot < roster.length; slot++) {
+    for (let slot = 0; slot < ACTIVE_SLOTS; slot++) {
       const held = roster[slot];
       if (!held) continue;
       const current = playerById(next, held);
@@ -565,12 +705,13 @@ export function autoDraft(save: Save, years = 3): Save {
       const wage = wageOf(next, held);
       for (const agent of freeAgents(next)) {
         if (agent.kind !== current.kind || agent.overall <= current.overall) continue;
-        const offer = quote(next, agent.id);
+        const term = clamp(years, 1, maxYears(agent));
+        const offer = quote(next, agent.id, term, slot);
         if (!offer) continue;
         const delta = offer.wage - wage;
         if (delta > space) continue;
         const gain = agent.overall - current.overall;
-        if (!best || gain > best.gain || (gain === best.gain && delta > best.spend)) best = { held, id: agent.id, slot, gain, spend: delta };
+        if (!best || gain > best.gain || (gain === best.gain && delta > best.spend)) best = { held, id: agent.id, slot, gain, spend: delta, term };
       }
     }
     if (!best) break;
@@ -578,14 +719,14 @@ export function autoDraft(save: Save, years = 3): Save {
     if (released === next) break;
     const agent = playerById(released, best.id);
     if (!agent) break;
-    const signed = signPlayer(released, best.id, best.slot, clamp(years, 1, maxYears(agent)));
+    const signed = signPlayer(released, best.id, best.slot, best.term);
     if (signed === released) break;
     next = signed;
   }
   return next;
 }
 
-function cheapestCover(save: Save, slots: number[]) {
+function cheapestCover(save: Save, slots: number[], years: number) {
   const used = new Set<string>();
   let sum = 0;
   for (const slot of slots) {
@@ -594,9 +735,17 @@ function cheapestCover(save: Save, slots: number[]) {
     if (!options.length) continue;
     options.sort((a, b) => playerWage(a.overall) - playerWage(b.overall));
     used.add(options[0].id);
-    sum += quote(save, options[0].id)?.wage ?? playerWage(options[0].overall);
+    const term = clamp(years, 1, maxYears(options[0]));
+    sum += quote(save, options[0].id, term, slot)?.wage ?? playerWage(options[0].overall);
   }
   return sum;
+}
+
+export function releaseFee(save: Save, playerId: string) {
+  if (save.phase !== "market") return 0;
+  const deal = contractFor(save, playerId);
+  if (!deal || deal.clubId !== save.userClubId || deal.signedInWindow) return 0;
+  return Math.round(deal.wage * 0.5);
 }
 
 export function releasePlayer(save: Save, playerId: string) {
@@ -605,20 +754,24 @@ export function releasePlayer(save: Save, playerId: string) {
   const club = userClub(next);
   const at = club.roster.indexOf(playerId);
   if (at < 0) return save;
+  const fee = releaseFee(next, playerId);
+  if (fee > club.budget) return save;
+  club.budget -= fee;
   club.roster[at] = "";
   next.contracts = next.contracts.filter((c) => c.playerId !== playerId);
   const player = playerById(next, playerId);
-  if (player) log(next, `Released ${player.name}.`);
+  if (player) log(next, fee ? `Released ${player.name}. Buyout ${fee} cr.` : `Released ${player.name}.`);
   return next;
 }
 
 export function swapSlots(save: Save, a: number, b: number) {
-  if (a === b || a < 0 || b < 0 || a > 6 || b > 6) return save;
+  if (a === b || a < 0 || b < 0 || a >= SLOT_NAMES.length || b >= SLOT_NAMES.length) return save;
+  if (a >= 7 !== b >= 7) return save;
   const next = clone(save);
   const club = userClub(next);
   const pa = club.roster[a] ? playerById(next, club.roster[a]) : null;
   const pb = club.roster[b] ? playerById(next, club.roster[b]) : null;
-  if (!slotOk(pa, b) || !slotOk(pb, a)) return save;
+  if (!slotAccepts(pa, b, true) || !slotAccepts(pb, a, true)) return save;
   const hold = club.roster[a];
   club.roster[a] = club.roster[b];
   club.roster[b] = hold;
@@ -681,11 +834,11 @@ export function simCurrent(save: Save) {
   const next = clone(save);
   const me = userClub(next);
   const opp = match.opponentId;
-  const [mine, theirs] = simSides(next, me.id, opp, match.userHome);
-  writeUserScore(next, match, mine, theirs);
+  const scored = simSides(next, me.id, opp, match.userHome);
+  writeUserScore(next, match, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
   sweepSiblings(next, match);
   const oppClub = clubById(next, opp);
-  log(next, `${mine > theirs ? "Beat" : "Lost to"} ${oppClub?.name ?? "them"} ${Math.max(mine, theirs)}–${Math.min(mine, theirs)}.`);
+  log(next, `${scored.goalsA > scored.goalsB ? "Beat" : "Lost to"} ${oppClub?.name ?? "them"} ${Math.max(scored.goalsA, scored.goalsB)}–${Math.min(scored.goalsA, scored.goalsB)}.`);
   return next;
 }
 
@@ -728,10 +881,10 @@ export function matchupFor(save: Save, opponentId: string): Matchup | null {
   const opp = clubById(save, opponentId);
   if (!opp) return null;
   const side = (club: Club) => {
-    const cards = club.roster.map((id) => playerById(save, id)).filter((p): p is LeaguePlayer => !!p);
+    const cards = club.roster.slice(0, ACTIVE_SLOTS).map((id) => (id ? playerById(save, id) : null)).filter((p): p is LeaguePlayer => !!p);
     return { ice: cards.slice(0, 4), bench: cards.slice(4, 7) };
   };
-  if (me.roster.some((id) => !id) || opp.roster.some((id) => !id)) return null;
+  if (me.roster.slice(0, ACTIVE_SLOTS).some((id) => !id) || opp.roster.slice(0, ACTIVE_SLOTS).some((id) => !id)) return null;
   const userHome = currentMatch(save)?.opponentId === opponentId ? currentMatch(save)!.userHome : true;
   const building = userHome ? me.kit : opp.kit;
   const worn = wornHues(userHome ? me.kit : opp.kit, userHome ? opp.kit : me.kit);
@@ -754,14 +907,61 @@ export function matchupFor(save: Save, opponentId: string): Matchup | null {
   };
 }
 
-export function firstOpenSlot(save: Save, playerId: string) {
+export function firstOpenSlot(save: Save, playerId: string, allowReserve = false) {
   const player = playerById(save, playerId);
   if (!player) return -1;
-  return userClub(save).roster.findIndex((id, index) => !id && slotOk(player, index));
+  return userClub(save).roster.findIndex((id, index) => !id && (index < 7 || allowReserve) && slotAccepts(player, index));
 }
 
 export function slotName(index: number) {
   return SLOT_NAMES[index] ?? "Slot";
+}
+
+export function potentialOverall(player: LeaguePlayer) {
+  if (!player.potential) return player.overall;
+  return player.kind === "skater" ? overallSkater(player.potential as SkaterRatings) : overallGoalie(player.potential as GoalieRatings);
+}
+
+export function seasonProgress(player: LeaguePlayer) {
+  if (!player.prior) return null;
+  const before = player.kind === "skater" ? overallSkater(player.prior as SkaterRatings) : overallGoalie(player.prior as GoalieRatings);
+  const now = player.ratings as Record<string, number>;
+  const old = player.prior as unknown as Record<string, number>;
+  const up: string[] = [];
+  const down: string[] = [];
+  for (const key of Object.keys(now)) {
+    const delta = now[key] - (old[key] ?? now[key]);
+    if (delta > 0) up.push(key);
+    if (delta < 0) down.push(key);
+  }
+  return { delta: player.overall - before, up, down };
+}
+
+export function clubPrestige(save: Save, clubId: string) {
+  const club = clubById(save, clubId);
+  if (!club) return 0;
+  const tier = clamp(club.tier, 0, 7);
+  let score = 6 + tier * 9;
+  if (club.user && club.history.length === 0) return clamp(Math.min(score, 4 + tier * 2), 1, 99);
+  for (const line of club.history.slice(-5)) {
+    score += Math.max(0, 6 - Math.floor(line.finish / 2));
+    if (line.playoff === "Champion") score += 4;
+    else if (line.playoff === "Finalist") score += 2;
+    if (line.universe === "Champion") score += 5;
+  }
+  return clamp(Math.round(score), 1, 99);
+}
+
+export function knockSeed(save: Save, match: Knockout, side: "home" | "away") {
+  const clubId = side === "home" ? match.homeId : match.awayId;
+  if (!clubId) return 0;
+  if (match.competition === "universe") {
+    const at = save.qualifiers.findIndex((q) => q.clubId === clubId);
+    return at >= 0 ? at + 1 : 0;
+  }
+  const table = standings(save, match.tier);
+  const at = table.findIndex((c) => c.id === clubId);
+  return at >= 0 ? at + 1 : 0;
 }
 
 function enterPlayoffs(save: Save) {
@@ -833,7 +1033,7 @@ function openMarket(save: Save) {
   resetStats(save);
   aiEmergencyRelease(save);
   save.phase = "market";
-  log(save, "Free agency is open. Contracts of three seasons are the longest you can offer.");
+  log(save, "Free agency is open. Active deals run up to five seasons. Reserves run three, and only for players with under four years in.");
 }
 
 function setupSeason(save: Save) {
@@ -851,7 +1051,8 @@ function resolveOtherLeagues(save: Save) {
   for (let tier = 0; tier < 8; tier++) {
     if (tier === mine) continue;
     for (const fixture of save.fixtures.filter((f) => f.tier === tier && f.hg === null)) {
-      scoreFixture(save, fixture, ...simSides(save, fixture.homeId, fixture.awayId, true));
+      const scored = simSides(save, fixture.homeId, fixture.awayId, true);
+      scoreFixture(save, fixture, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
     }
     const table = standings(save, tier);
     if (table[0]) {
@@ -1059,17 +1260,17 @@ function fallingFrom(save: Save, year: number, tier: number) {
   });
 }
 
-function writeUserScore(save: Save, match: UserMatch, userGoals: number, oppGoals: number, sheet?: MatchSheet) {
+function writeUserScore(save: Save, match: UserMatch, userGoals: number, oppGoals: number, sheet?: MatchSheet, blastoff?: boolean) {
   const hg = match.userHome ? userGoals : oppGoals;
   const ag = match.userHome ? oppGoals : userGoals;
   const sides = sheet ? splitSheet(save, match, sheet) : undefined;
   if (match.kind === "fixture") {
     const fixture = save.fixtures.find((f) => f.id === match.id);
-    if (fixture && fixture.hg === null) scoreFixture(save, fixture, hg, ag, sides);
+    if (fixture && fixture.hg === null) scoreFixture(save, fixture, hg, ag, sides, blastoff);
     return;
   }
   const knock = save.knockout.find((m) => m.id === match.id);
-  if (knock && knock.hg === null) scoreKnock(save, knock, hg, ag, sides);
+  if (knock && knock.hg === null) scoreKnock(save, knock, hg, ag, sides, blastoff);
 }
 
 function sweepSiblings(save: Save, match: UserMatch) {
@@ -1078,7 +1279,8 @@ function sweepSiblings(save: Save, match: UserMatch) {
     if (!fixture) return;
     for (const other of save.fixtures) {
       if (other.tier !== fixture.tier || other.round !== fixture.round || other.hg !== null) continue;
-      scoreFixture(save, other, ...simSides(save, other.homeId, other.awayId, true));
+      const scored = simSides(save, other.homeId, other.awayId, true);
+      scoreFixture(save, other, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
     }
     return;
   }
@@ -1097,7 +1299,8 @@ function sweepSiblings(save: Save, match: UserMatch) {
     const round = Math.min(...ready.map((m) => m.round));
     let moved = false;
     for (const other of ready.filter((m) => m.round === round)) {
-      scoreKnock(save, other, ...simSides(save, other.homeId, other.awayId, true));
+      const scored = simSides(save, other.homeId, other.awayId, true);
+      scoreKnock(save, other, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
       moved = true;
     }
     if (!moved) break;
@@ -1109,7 +1312,7 @@ function sameComp(save: Save, match: Knockout, id: string) {
   return !!mine && mine.competition === match.competition && (match.competition === "universe" || mine.tier === match.tier);
 }
 
-function scoreFixture(save: Save, fixture: Fixture, hg: number, ag: number, sides?: SideSheet) {
+function scoreFixture(save: Save, fixture: Fixture, hg: number, ag: number, sides?: SideSheet, blastoff?: boolean) {
   fixture.hg = hg;
   fixture.ag = ag;
   const home = clubById(save, fixture.homeId);
@@ -1128,12 +1331,12 @@ function scoreFixture(save: Save, fixture: Fixture, hg: number, ag: number, side
   }
   const homeLines = creditClub(save, fixture.homeId, hg, ag, sides?.home);
   const awayLines = creditClub(save, fixture.awayId, ag, hg, sides?.away);
-  const blastoff = noteBlastoff(save, fixture.homeId, fixture.awayId, hg, ag, sides?.blastoff);
-  fixture.box = { blastoff, home: packLines(save, homeLines), away: packLines(save, awayLines) };
+  const boom = noteBlastoff(save, fixture.homeId, fixture.awayId, hg, ag, sides ? sides.blastoff : blastoff);
+  fixture.box = { blastoff: boom, home: packLines(save, homeLines), away: packLines(save, awayLines) };
   publishReport(save, `Round ${fixture.round + 1} of 9`, fixture.homeId, fixture.awayId, hg, ag, fixture.box);
 }
 
-function scoreKnock(save: Save, match: Knockout, hg: number, ag: number, sides?: SideSheet) {
+function scoreKnock(save: Save, match: Knockout, hg: number, ag: number, sides?: SideSheet, blastoff?: boolean) {
   match.hg = hg;
   match.ag = ag;
   const winnerId = hg > ag ? match.homeId : match.awayId;
@@ -1146,8 +1349,8 @@ function scoreKnock(save: Save, match: Knockout, hg: number, ag: number, sides?:
   }
   const homeLines = creditClub(save, match.homeId, hg, ag, sides?.home);
   const awayLines = creditClub(save, match.awayId, ag, hg, sides?.away);
-  const blastoff = noteBlastoff(save, match.homeId, match.awayId, hg, ag, sides?.blastoff);
-  match.box = { blastoff, home: packLines(save, homeLines), away: packLines(save, awayLines) };
+  const boom = noteBlastoff(save, match.homeId, match.awayId, hg, ag, sides ? sides.blastoff : blastoff);
+  match.box = { blastoff: boom, home: packLines(save, homeLines), away: packLines(save, awayLines) };
   publishReport(save, roundLabel(match), match.homeId, match.awayId, hg, ag, match.box);
   feedWinner(save, match, winnerId);
 }
@@ -1216,14 +1419,16 @@ function simBracket(save: Save, competition: Knockout["competition"], tier: numb
     if (!ready.length) return;
     const round = Math.min(...ready.map((m) => m.round));
     for (const match of ready.filter((m) => m.round === round)) {
-      scoreKnock(save, match, ...simSides(save, match.homeId, match.awayId, true));
+      const scored = simSides(save, match.homeId, match.awayId, true);
+      scoreKnock(save, match, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
     }
   }
 }
 
 function simLeftoverFixtures(save: Save, tier: number) {
   for (const fixture of save.fixtures.filter((f) => f.tier === tier && f.hg === null)) {
-    scoreFixture(save, fixture, ...simSides(save, fixture.homeId, fixture.awayId, true));
+    const scored = simSides(save, fixture.homeId, fixture.awayId, true);
+    scoreFixture(save, fixture, scored.goalsA, scored.goalsB, undefined, scored.blastoff);
   }
 }
 
@@ -1276,17 +1481,36 @@ function universeChampion(save: Save) {
   return final.hg! > final.ag! ? final.homeId : final.awayId;
 }
 
-function simSides(save: Save, homeId: string, awayId: string, homeEdge: boolean): [number, number] {
+function simSides(save: Save, homeId: string, awayId: string, homeEdge: boolean) {
   const edge = (strength(save, homeId) - strength(save, awayId)) / 28 + (homeEdge ? 0.12 : 0);
-  let hg = Math.min(5, poisson(save, clamp(2.15 + edge, 0.35, 4.4)));
-  let ag = Math.min(5, poisson(save, clamp(2.15 - edge, 0.35, 4.4)));
-  if (hg === ag) {
-    if (take(save) < clamp(0.5 + edge * 0.18, 0.2, 0.8)) hg += 1;
-    else ag += 1;
+  const homeWins = take(save) < clamp(0.5 + edge * 0.22, 0.12, 0.88);
+  const kind = take(save);
+  let winner = 5;
+  let loser = 2;
+  let blastoff = false;
+  if (kind < 0.05) {
+    blastoff = true;
+    const roll = take(save);
+    winner = roll < 0.22 ? 1 : roll < 0.52 ? 2 : roll < 0.8 ? 3 : 4;
+    loser = Math.floor(take(save) * winner);
+  } else if (kind < 0.09) {
+    const roll = take(save);
+    winner = roll < 0.22 ? 2 : roll < 0.58 ? 3 : 4;
+    loser = Math.floor(take(save) * winner);
+  } else if (kind < 0.1) {
+    winner = 6;
+    loser = 5;
+    if (take(save) < 0.12) blastoff = true;
+  } else {
+    const lean = Math.abs(edge);
+    const shut = 0.18 + lean * 0.35;
+    const one = shut + 0.28;
+    const two = one + 0.24;
+    const three = two + 0.18;
+    const roll = take(save);
+    loser = roll < shut ? 0 : roll < one ? 1 : roll < two ? 2 : roll < three ? 3 : 4;
   }
-  if (hg > ag && hg >= 5) ag = Math.min(ag, 4);
-  if (ag > hg && ag >= 5) hg = Math.min(hg, 4);
-  return [hg, ag];
+  return { goalsA: homeWins ? winner : loser, goalsB: homeWins ? loser : winner, blastoff };
 }
 
 function strength(save: Save, clubId: string) {
@@ -1303,26 +1527,34 @@ const GOALIE_PURSE = [20, 30, 44, 60, 84, 114, 154, 206];
 
 function budgetFor(club: Club) {
   const tier = clamp(club.tier, 0, 7);
+  const previous = club.ledger ? clamp(club.ledger.tier, 0, 7) : tier;
+  const promoted = !!club.ledger && club.tier > club.ledger.tier;
+  const rate = promoted ? previous : tier;
+  const base = promoted ? Math.round(BASE[previous] * 0.62 + BASE[tier] * 0.38) : BASE[tier];
   return (
-    BASE[tier] +
-    club.wins * PER_WIN[tier] +
-    (club.rsTitle ? RS_BONUS[tier] : 0) +
-    club.playoffWins * PO_WIN[tier] +
-    (club.cupTitle ? CUP_BONUS[tier] : 0) +
-    club.universeWins * UNI_WIN[tier] +
-    (club.universeChamp ? UNI_BONUS[tier] : 0) +
+    base +
+    club.wins * PER_WIN[rate] +
+    (club.rsTitle ? RS_BONUS[rate] : 0) +
+    club.playoffWins * PO_WIN[rate] +
+    (club.cupTitle ? CUP_BONUS[rate] : 0) +
+    club.universeWins * UNI_WIN[rate] +
+    (club.universeChamp ? UNI_BONUS[rate] : 0) +
     club.awardCash
   );
 }
 
 function budgetNote(club: Club) {
   const tier = clamp(club.tier, 0, 7);
-  const bits = [`Base ${BASE[tier]}`, `${club.wins} wins ${club.wins * PER_WIN[tier]}`];
-  if (club.rsTitle) bits.push(`season ${RS_BONUS[tier]}`);
-  if (club.playoffWins) bits.push(`playoff ${club.playoffWins * PO_WIN[tier]}`);
-  if (club.cupTitle) bits.push(`cup ${CUP_BONUS[tier]}`);
-  if (club.universeWins) bits.push(`universe ${club.universeWins * UNI_WIN[tier]}`);
-  if (club.universeChamp) bits.push(`champion ${UNI_BONUS[tier]}`);
+  const previous = club.ledger ? clamp(club.ledger.tier, 0, 7) : tier;
+  const promoted = !!club.ledger && club.tier > club.ledger.tier;
+  const rate = promoted ? previous : tier;
+  const base = promoted ? Math.round(BASE[previous] * 0.62 + BASE[tier] * 0.38) : BASE[tier];
+  const bits = [promoted ? `Promotion purse ${base}` : `Base ${base}`, `${club.wins} wins ${club.wins * PER_WIN[rate]}`];
+  if (club.rsTitle) bits.push(`season ${RS_BONUS[rate]}`);
+  if (club.playoffWins) bits.push(`playoff ${club.playoffWins * PO_WIN[rate]}`);
+  if (club.cupTitle) bits.push(`cup ${CUP_BONUS[rate]}`);
+  if (club.universeWins) bits.push(`universe ${club.universeWins * UNI_WIN[rate]}`);
+  if (club.universeChamp) bits.push(`champion ${UNI_BONUS[rate]}`);
   if (club.awardCash) bits.push(`awards ${club.awardCash}`);
   return bits.join(" · ");
 }
@@ -1335,8 +1567,9 @@ function ageAndDevelop(save: Save) {
     if (!player || !club) continue;
     const games = club.wins + club.losses;
     const winRate = games ? club.wins / games : 0.5;
+    const slot = club.roster.indexOf(player.id);
     archiveSeason(save, player, club);
-    develop(save, player, winRate);
+    develop(save, player, winRate, slot >= 7);
     player.seasonsPlayed += 1;
     if (player.seasonsPlayed >= 10) {
       player.retired = true;
@@ -1346,15 +1579,19 @@ function ageAndDevelop(save: Save) {
     }
     contract.seasonsLeft -= 1;
     if (contract.seasonsLeft <= 0) {
+      const at = club.roster.indexOf(player.id);
       clearSlot(club, player.id);
       save.contracts = save.contracts.filter((c) => c.playerId !== player.id);
-      if (club.user) log(save, `${player.name}'s contract expired.`);
+      if (at >= 7) club.rights.push(player.id);
+      else if (at >= 0) club.unretained.push(player.id);
+      if (club.user) log(save, at >= 7 ? `${player.name}'s reserve deal ended. First dibs are yours.` : `${player.name}'s contract expired.`);
     }
   }
   for (const id of retire) {
     for (const club of save.clubs) clearSlot(club, id);
     save.contracts = save.contracts.filter((c) => c.playerId !== id);
   }
+  for (const club of save.clubs) orderLineup(save, club);
   const rng = makeRng(save.seed || 1);
   const rollBand = () => {
     const roll = rng.next();
@@ -1368,7 +1605,12 @@ function ageAndDevelop(save: Save) {
   save.seed = rng.seed();
 }
 
-function develop(save: Save, player: LeaguePlayer, winRate: number) {
+function develop(save: Save, player: LeaguePlayer, winRate: number, reserve: boolean) {
+  player.prior = { ...player.ratings };
+  if (player.season.games < 4) {
+    if (reserve) nudgeToward(save, player, true);
+    return;
+  }
   const age = player.seasonsPlayed;
   const roll = take(save);
   let dir = 0;
@@ -1377,31 +1619,46 @@ function develop(save: Save, player: LeaguePlayer, winRate: number) {
   else if (winRate >= 0.65 && roll < 0.5) dir = 1;
   else if (winRate <= 0.3 && roll < 0.45) dir = -1;
   else if (roll < 0.18) dir = take(save) < 0.5 ? -1 : 1;
-  if (dir === 0) return;
-  nudge(player, dir, save);
+  if (dir > 0) nudgeToward(save, player, false);
+  else if (dir < 0) nudgeDown(save, player);
 }
 
-function nudge(player: LeaguePlayer, dir: number, save: Save) {
-  if (player.kind === "skater") {
-    const keys: (keyof SkaterRatings)[] = ["speed", "agility", "shot", "attack", "defense", "handling", "toughness"];
-    const key = keys[Math.floor(take(save) * keys.length)];
-    player.ratings[key] = clamp(player.ratings[key] + dir, 1, 11);
-    player.overall = overallSkater(player.ratings);
-    return;
+function nudgeToward(save: Save, player: LeaguePlayer, farm: boolean) {
+  const now = player.ratings as Record<string, number>;
+  const cap = (player.potential ?? player.ratings) as unknown as Record<string, number>;
+  const keys = Object.keys(now).filter((key) => now[key] < (cap[key] ?? now[key]) && now[key] < 11);
+  if (!keys.length) return;
+  if (farm) {
+    const gap = (potentialOverall(player) - player.overall) / 12;
+    if (gap < 0.35 || take(save) >= 0.6) return;
   }
-  const keys: (keyof GoalieRatings)[] = ["speed", "agility", "iq", "rebound", "composure", "poke"];
   const key = keys[Math.floor(take(save) * keys.length)];
-  player.ratings[key] = clamp(player.ratings[key] + dir, 1, 11);
-  player.overall = overallGoalie(player.ratings);
+  now[key] += 1;
+  retuneOverall(player);
+}
+
+function nudgeDown(save: Save, player: LeaguePlayer) {
+  const now = player.ratings as Record<string, number>;
+  const keys = Object.keys(now).filter((key) => now[key] > 1);
+  if (!keys.length) return;
+  const key = keys[Math.floor(take(save) * keys.length)];
+  now[key] -= 1;
+  retuneOverall(player);
+}
+
+function retuneOverall(player: LeaguePlayer) {
+  player.overall = player.kind === "skater" ? overallSkater(player.ratings) : overallGoalie(player.ratings as GoalieRatings);
 }
 
 function aiEmergencyRelease(save: Save) {
   for (const club of save.clubs) {
     if (club.user) continue;
     while (payroll(save, club.id) > club.budget) {
-      const held = club.roster.map((id) => playerById(save, id)).filter((p): p is LeaguePlayer => !!p);
+      const held = club.roster
+        .map((id, index) => ({ id, index, player: id ? playerById(save, id) : null }))
+        .filter((row): row is { id: string; index: number; player: LeaguePlayer } => !!row.player);
       if (!held.length) break;
-      held.sort((a, b) => a.overall - b.overall);
+      held.sort((a, b) => slotWeight(a.index) - slotWeight(b.index) || a.player.overall - b.player.overall);
       clearSlot(club, held[0].id);
       save.contracts = save.contracts.filter((c) => c.playerId !== held[0].id);
     }
@@ -1440,9 +1697,11 @@ function emergencyFill(save: Save) {
         clubId: club.id,
         wage,
         seasonsLeft: clamp(1 + Math.floor(rng.next() * 2), 1, Math.min(3, left)),
+        signedInWindow: false,
       });
       if (payroll(save, club.id) > club.budget) club.budget = payroll(save, club.id);
     }
+    orderLineup(save, club);
   }
   save.seed = rng.seed();
 }
@@ -1454,6 +1713,15 @@ function overallForWage(money: number) {
 }
 
 function aiShopping(save: Save) {
+  for (const club of save.clubs) {
+    if (club.user) continue;
+    for (const id of [...club.rights]) claimRight(save, club, id);
+  }
+  for (const club of save.clubs) {
+    if (club.user) continue;
+    club.rights = [];
+    club.unretained = [];
+  }
   const agents = freeAgents(save);
   for (const player of agents) {
     let best: { club: Club; wage: number; drop: LeaguePlayer | null } | null = null;
@@ -1476,9 +1744,32 @@ function aiShopping(save: Save) {
     const slot = openSlot(save, best.club, player);
     if (slot < 0) continue;
     best.club.roster[slot] = player.id;
-    const years = clamp(Math.min(maxYears(player), 1 + Math.floor(take(save) * 3)), 1, 3);
-    save.contracts.push({ playerId: player.id, clubId: best.club.id, wage: best.wage, seasonsLeft: years });
+    const years = clamp(Math.min(maxYears(player), 1 + Math.floor(take(save) * 5)), 1, 5);
+    save.contracts.push({ playerId: player.id, clubId: best.club.id, wage: best.wage, seasonsLeft: years, signedInWindow: false });
+    stripClaims(save, player.id);
   }
+  for (const club of save.clubs) orderLineup(save, club);
+  stockAiReserves(save);
+}
+
+function claimRight(save: Save, club: Club, playerId: string) {
+  const player = playerById(save, playerId);
+  if (!player || player.retired || contractFor(save, playerId)) return;
+  const drop = worstUpgrade(save, club, player);
+  if (!drop) return;
+  const wage = Math.max(4, Math.round(playerWage(player.overall) * 0.72));
+  const pay = payroll(save, club.id) - (drop.id ? wageOf(save, drop.id) : 0);
+  if (club.budget - pay < wage) return;
+  if (drop.id) {
+    clearSlot(club, drop.id);
+    save.contracts = save.contracts.filter((c) => c.playerId !== drop.id);
+  }
+  const slot = openSlot(save, club, player);
+  if (slot < 0) return;
+  club.roster[slot] = player.id;
+  const years = clamp(Math.min(maxYears(player), 2), 1, 5);
+  save.contracts.push({ playerId, clubId: club.id, wage, seasonsLeft: years, signedInWindow: false });
+  stripClaims(save, playerId);
 }
 
 function bestAiBid(save: Save, player: LeaguePlayer) {
@@ -1500,7 +1791,7 @@ function bestAiBid(save: Save, player: LeaguePlayer) {
 function worstUpgrade(save: Save, club: Club, player: LeaguePlayer): (LeaguePlayer & { id: string }) | null {
   const kindSlots = club.roster
     .map((id, index) => ({ id, index, player: id ? playerById(save, id) : null }))
-    .filter((slot) => (player.kind === "goalie" ? slot.index === 3 : slot.index !== 3));
+    .filter((slot) => slot.index < ACTIVE_SLOTS && (player.kind === "goalie" ? slot.index === 3 : slot.index !== 3));
   const empty = kindSlots.find((slot) => !slot.player);
   if (empty) return { ...(player.kind === "goalie" ? makeDummyGoalie() : makeDummySkater()), id: "" };
   const held = kindSlots.map((slot) => slot.player).filter((p): p is LeaguePlayer => !!p);
@@ -1511,7 +1802,7 @@ function worstUpgrade(save: Save, club: Club, player: LeaguePlayer): (LeaguePlay
 }
 
 function openSlot(save: Save, club: Club, player: LeaguePlayer) {
-  return club.roster.findIndex((id, index) => !id && slotOk(player, index));
+  return club.roster.findIndex((id, index) => index < ACTIVE_SLOTS && !id && slotOk(player, index));
 }
 
 function clearSlot(club: Club, playerId: string) {
@@ -1524,25 +1815,33 @@ function wageOf(save: Save, playerId: string) {
 }
 
 function fillAiRoster(save: Save, rng: Rng, club: Club, mean: number) {
-  const goals = makeGoalie(save, rng, around(rng, mean, 5));
-  const skaters = Array.from({ length: 6 }, () => makeSkater(save, rng, around(rng, mean, 6)));
-  const lineup = [skaters[0], skaters[1], skaters[2], goals, skaters[3], skaters[4], skaters[5]];
-  lineup.forEach((player, slot) => {
-    const seasons = livedSeasons(rng, save.season, 0.9);
-    player.seasonsPlayed = seasons;
+  const goalie = makeGoalie(save, rng, around(rng, mean, 3));
+  const targets = [around(rng, mean + 6, 2), around(rng, mean + 5, 2), around(rng, mean + 4, 2), around(rng, mean - 8, 3), around(rng, mean - 14, 3), around(rng, mean - 20, 3)];
+  const skaters = targets.map((target) => makeSkater(save, rng, target)).sort((a, b) => b.overall - a.overall);
+  const slots = [0, 1, 2, 4, 5, 6];
+  const place = (player: LeaguePlayer, slot: number, wage = playerWage(player.overall), yearsCap = 5) => {
+    player.seasonsPlayed = slot >= 7 ? Math.floor(rng.next() * 3) : livedSeasons(rng, save.season, 0.9);
+    assignPotential(() => rng.next(), player, slot >= 7 ? 4 : 0);
     inventHistory(rng, player, club.name, club.tier, save.season);
     save.players.push(player);
     club.roster[slot] = player.id;
-    const left = 10 - player.seasonsPlayed;
-    const years = clamp(Math.min(left, 1 + Math.floor(rng.next() * 3)), 1, 3);
-    save.contracts.push({ playerId: player.id, clubId: club.id, wage: playerWage(player.overall), seasonsLeft: years });
-  });
+    const left = Math.max(1, 10 - player.seasonsPlayed);
+    const years = clamp(Math.min(left, yearsCap, 1 + Math.floor(rng.next() * yearsCap)), 1, Math.min(yearsCap, left));
+    save.contracts.push({ playerId: player.id, clubId: club.id, wage, seasonsLeft: years, signedInWindow: false });
+  };
+  place(goalie, 3);
+  skaters.forEach((player, index) => place(player, slots[index]));
+  if (rng.next() < 0.4) {
+    const prospect = makeSkater(save, rng, around(rng, mean - 16, 4));
+    place(prospect, 7, Math.max(4, Math.round(playerWage(prospect.overall) * 0.55)), 3);
+  }
 }
 
 function stockFree(save: Save, rng: Rng, player: LeaguePlayer) {
   const veteran = rng.next() < 0.78;
   const seasons = veteran ? livedSeasons(rng, save.season, 1) : 0;
   player.seasonsPlayed = seasons;
+  assignPotential(() => rng.next(), player, seasons <= 1 ? 2 : 0);
   const tier = Math.floor(rng.next() * 3);
   inventHistory(rng, player, clubName(rng, new Set()), tier, save.season);
   save.players.push(player);
@@ -1552,6 +1851,9 @@ function addFree(save: Save, player: LeaguePlayer) {
   player.seasonsPlayed = 0;
   player.history = [];
   player.season = emptyForm();
+  player.prior = null;
+  if (!player.planet) player.planet = PLANETS[Math.floor(take(save) * PLANETS.length)];
+  assignPotential(() => take(save), player, 2);
   save.players.push(player);
 }
 
@@ -1573,6 +1875,9 @@ function makeSkater(save: Save, rng: Rng, target: number): LeaguePlayer {
     season: emptyForm(),
     awards: [],
     retired: false,
+    planet: PLANETS[Math.floor(rng.next() * PLANETS.length)],
+    potential: { ...(ratings as SkaterRatings) },
+    prior: null,
   };
   card.overall = overallSkater(card.ratings);
   tune(card, target, rng);
@@ -1597,6 +1902,9 @@ function makeGoalie(save: Save, rng: Rng, target: number): LeaguePlayer {
     season: emptyForm(),
     awards: [],
     retired: false,
+    planet: PLANETS[Math.floor(rng.next() * PLANETS.length)],
+    potential: { ...(ratings as GoalieRatings) },
+    prior: null,
   };
   card.overall = overallGoalie(card.ratings as GoalieRatings);
   tune(card, target, rng);
@@ -1642,7 +1950,7 @@ function blankClub(id: string, name: string, tag: string, kit: Kit, tier: number
     user,
     budget: 0,
     budgetNote: "",
-    roster: ["", "", "", "", "", "", ""],
+    roster: ["", "", "", "", "", "", "", "", "", ""],
     habits: { bounce: 40, earlyShot: 40, crash: 40, patient: 40, risk: 40 },
     wins: 0,
     losses: 0,
@@ -1657,6 +1965,9 @@ function blankClub(id: string, name: string, tag: string, kit: Kit, tier: number
     universeChamp: false,
     history: [],
     ledger: null,
+    planet: "",
+    rights: [],
+    unretained: [],
   };
 }
 
@@ -1717,9 +2028,105 @@ function serial(save: Save, prefix: string) {
   return id;
 }
 
+function preferredPrestige(overall: number) {
+  return clamp(8 + ((overall - 42) / 57) * 84, 4, 96);
+}
+
+function assignPotential(next: () => number, player: LeaguePlayer, extra = 0) {
+  const src = player.ratings as Record<string, number>;
+  const pot: Record<string, number> = {};
+  for (const key of Object.keys(src)) pot[key] = src[key];
+  const young = player.seasonsPlayed <= 2 ? 2 : player.seasonsPlayed <= 4 ? 1 : 0;
+  let points = young + extra;
+  if (player.seasonsPlayed >= 7) points = next() < 0.25 ? 1 : 0;
+  else if (next() < 0.35) points += 1;
+  const keys = Object.keys(pot);
+  for (let i = 0; i < points; i++) {
+    const key = keys[Math.floor(next() * keys.length)];
+    if (pot[key] < 11) pot[key] += 1;
+  }
+  player.potential = pot as LeaguePlayer["potential"];
+}
+
+function stripClaims(save: Save, playerId: string) {
+  for (const club of save.clubs) {
+    club.rights = club.rights.filter((id) => id !== playerId);
+    club.unretained = club.unretained.filter((id) => id !== playerId);
+  }
+}
+
+function orderLineup(save: Save, club: Club) {
+  if (club.user) return;
+  const slots = [0, 1, 2, 4, 5, 6];
+  const ids = slots.map((index) => club.roster[index]);
+  const players = ids.map((id) => (id ? playerById(save, id) : null)).filter((p): p is LeaguePlayer => !!p && p.kind === "skater");
+  if (players.length !== ids.filter(Boolean).length) return;
+  players.sort((a, b) => b.overall - a.overall || a.name.localeCompare(b.name));
+  slots.forEach((index, i) => {
+    club.roster[index] = players[i]?.id ?? "";
+  });
+}
+
+function stockAiReserves(save: Save) {
+  for (const club of save.clubs) {
+    if (club.user || club.roster[7]) continue;
+    if (take(save) > 0.45) continue;
+    const mean = TIER_MEAN[clamp(club.tier, 0, 7)];
+    const space = room(save, club.id);
+    const prospects = freeAgents(save)
+      .filter((player) => player.seasonsPlayed < 4 && player.overall <= mean - 8 && potentialOverall(player) >= player.overall + 4)
+      .sort((a, b) => potentialOverall(b) - potentialOverall(a) || a.overall - b.overall);
+    const pick = prospects.find((player) => Math.round(playerWage(player.overall) * 0.55) <= space);
+    if (!pick) continue;
+    const wage = Math.max(4, Math.round(playerWage(pick.overall) * 0.55));
+    const years = clamp(Math.min(3, maxYears(pick), 1 + Math.floor(take(save) * 3)), 1, 3);
+    club.roster[7] = pick.id;
+    save.contracts.push({ playerId: pick.id, clubId: club.id, wage, seasonsLeft: years, signedInWindow: false });
+    stripClaims(save, pick.id);
+  }
+}
+
+function inventClubHistory(rng: Rng, club: Club, opening: number) {
+  const years = 3 + Math.floor(rng.next() * 3);
+  const profile = Math.floor(rng.next() * 10);
+  const lines: ClubYear[] = [];
+  for (let ago = years; ago >= 1; ago--) {
+    const finish = clamp(10 - profile + Math.floor(rng.next() * 3) - 1, 1, 10);
+    const wins = clamp(Math.round((10 - finish) * 0.85 + rng.next() * 2), 0, 9);
+    const losses = Math.max(0, 9 - wins);
+    const playoff = finish > 8 ? "Missed" : rng.next() < 0.1 ? "Champion" : finish <= 2 && rng.next() < 0.45 ? "Finalist" : "Quarterfinal";
+    const universe = rng.next() < 0.03 ? "Champion" : "—";
+    lines.push({
+      year: opening - ago,
+      tier: club.tier,
+      wins,
+      losses,
+      gf: wins * 4 + finish,
+      ga: losses * 4 + (10 - finish),
+      finish,
+      playoff,
+      universe,
+      blastoffs: rng.next() < 0.2 ? 1 : 0,
+      offense: TIER_MEAN[club.tier],
+      defense: TIER_MEAN[club.tier],
+      iq: TIER_MEAN[club.tier],
+    });
+  }
+  club.history = lines;
+}
+
 function slotOk(player: { kind: string } | null, slot: number) {
   if (!player) return true;
+  if (slot >= 7) return true;
   return slot === 3 ? player.kind === "goalie" : player.kind === "skater";
+}
+
+export function slotAccepts(player: { kind: string; seasonsPlayed: number } | null, slot: number, moving = false) {
+  if (!player) return true;
+  if (slot >= 7 && slot < SLOT_NAMES.length) return moving || player.seasonsPlayed < 4;
+  if (slot === 3) return player.kind === "goalie";
+  if (slot >= 0 && slot < ACTIVE_SLOTS) return player.kind === "skater";
+  return false;
 }
 
 function personName(rng: Rng, save: Save) {
@@ -1888,26 +2295,22 @@ function archiveSeason(save: Save, player: LeaguePlayer, club: Club) {
 function creditClub(save: Save, clubId: string, scored: number, allowed: number, lines?: MatchLine[]): MatchLine[] {
   const club = clubById(save, clubId);
   if (!club) return [];
-  const skaters: Extract<LeaguePlayer, { kind: "skater" }>[] = [];
-  let goalie: Extract<LeaguePlayer, { kind: "goalie" }> | null = null;
-  for (const id of club.roster) {
-    const player = id ? playerById(save, id) : null;
-    if (!player || player.retired) continue;
-    if (player.kind === "goalie") {
-      goalie = player;
-      player.season.games += 1;
-      if (!lines) player.season.ga += allowed;
-      if (scored > allowed) player.season.wins += 1;
-      if (allowed === 0 && scored >= allowed) player.season.shutouts += 1;
-    } else {
-      player.season.games += 1;
-      skaters.push(player);
-    }
-  }
   if (lines) {
+    const dressed = new Set<string>();
+    for (let i = 0; i < 4; i++) if (club.roster[i]) dressed.add(club.roster[i]);
+    for (const line of lines) if (club.roster.indexOf(line.id) >= 0 && club.roster.indexOf(line.id) < 7) dressed.add(line.id);
+    for (const id of dressed) {
+      const player = playerById(save, id);
+      if (!player || player.retired) continue;
+      player.season.games += 1;
+      if (player.kind === "goalie" && club.roster[3] === id) {
+        if (scored > allowed) player.season.wins += 1;
+        if (allowed === 0) player.season.shutouts += 1;
+      }
+    }
     for (const line of lines) {
       const player = playerById(save, line.id);
-      if (!player) continue;
+      if (!player || club.roster.indexOf(line.id) >= 7) continue;
       player.season.shots += line.shots;
       player.season.goals += line.goals;
       player.season.rushes += line.rushes;
@@ -1917,7 +2320,34 @@ function creditClub(save: Save, clubId: string, scored: number, allowed: number,
       player.season.ga += line.ga;
       player.season.pokes += line.pokes;
     }
-    return lines;
+    return lines.filter((line) => club.roster.indexOf(line.id) >= 0 && club.roster.indexOf(line.id) < 7);
+  }
+  const shares = new Map<string, number>();
+  let blasts = 0;
+  for (const index of [0, 1, 2]) {
+    const player = skaterAt(save, club, index);
+    if (!player) continue;
+    const sturdy = player.perks.includes("heavy") || (player.kind === "skater" && player.ratings.toughness >= 9);
+    const blasted = take(save) < (sturdy ? 0.05 : 0.16);
+    if (blasted) blasts += 1;
+    shares.set(player.id, blasted ? 0.4 : 1);
+  }
+  const subShare = [0.6, 0.45, 0.35];
+  for (let s = 0; s < 3; s++) {
+    if (blasts < s + 1) continue;
+    const player = skaterAt(save, club, 4 + s);
+    if (player) shares.set(player.id, subShare[s]);
+  }
+  const skaters = [...shares.entries()]
+    .map(([id, share]) => ({ player: playerById(save, id), share }))
+    .filter((row): row is { player: Extract<LeaguePlayer, { kind: "skater" }>; share: number } => !!row.player && row.player.kind === "skater" && row.share > 0);
+  for (const row of skaters) row.player.season.games += 1;
+  const goalie = club.roster[3] ? playerById(save, club.roster[3]) : null;
+  if (goalie && goalie.kind === "goalie") {
+    goalie.season.games += 1;
+    goalie.season.ga += allowed;
+    if (scored > allowed) goalie.season.wins += 1;
+    if (allowed === 0) goalie.season.shutouts += 1;
   }
   const made = new Map<string, MatchLine>();
   const touch = (id: string) => {
@@ -1930,7 +2360,7 @@ function creditClub(save: Save, clubId: string, scored: number, allowed: number,
   };
   for (let goal = 0; goal < scored; goal++) {
     if (!skaters.length) break;
-    const scorer = pickWeighted(save, skaters, (player) => player.ratings.shot);
+    const scorer = pickWeighted(save, skaters, (row) => row.share * row.player.ratings.shot).player;
     scorer.season.goals += 1;
     const row = touch(scorer.id);
     row.goals += 1;
@@ -1941,23 +2371,23 @@ function creditClub(save: Save, clubId: string, scored: number, allowed: number,
       scorer.season.shots += 1;
       row.shots += 1;
     }
-    if (skaters.length > 1 && take(save) < 0.72) {
-      const mates = skaters.filter((player) => player !== scorer);
-      const helper = pickWeighted(save, mates, (player) => player.ratings.attack);
+    const mates = skaters.filter((item) => item.player !== scorer);
+    if (mates.length && take(save) < 0.72) {
+      const helper = pickWeighted(save, mates, (item) => item.share * item.player.ratings.attack).player;
       helper.season.assists += 1;
       touch(helper.id).assists += 1;
     }
   }
-  for (const skater of skaters) {
-    const extra = Math.floor(take(save) * (2 + skater.ratings.shot / 3));
-    skater.season.shots += extra;
-    if (extra) touch(skater.id).shots += extra;
-    if (take(save) < 0.1 + skater.ratings.shot / 45) {
-      skater.season.blasts += 1;
-      touch(skater.id).blasts += 1;
+  for (const item of skaters) {
+    const extra = Math.floor(take(save) * (2 + item.player.ratings.shot / 3) * item.share);
+    item.player.season.shots += extra;
+    if (extra) touch(item.player.id).shots += extra;
+    if (take(save) < (0.1 + item.player.ratings.shot / 45) * item.share) {
+      item.player.season.blasts += 1;
+      touch(item.player.id).blasts += 1;
     }
   }
-  if (goalie) {
+  if (goalie && goalie.kind === "goalie") {
     const extra = 4 + Math.floor(take(save) * (4 + goalie.ratings.poke / 3));
     goalie.season.saves += extra;
     const row = touch(goalie.id);
@@ -1968,6 +2398,12 @@ function creditClub(save: Save, clubId: string, scored: number, allowed: number,
     row.pokes += pokes;
   }
   return [...made.values()];
+}
+
+function skaterAt(save: Save, club: Club, index: number): Extract<LeaguePlayer, { kind: "skater" }> | null {
+  const player = club.roster[index] ? playerById(save, club.roster[index]) : null;
+  if (!player || player.retired || player.kind !== "skater") return null;
+  return player;
 }
 
 function splitSheet(save: Save, match: UserMatch, sheet: MatchSheet): SideSheet {
@@ -1982,10 +2418,7 @@ function splitSheet(save: Save, match: UserMatch, sheet: MatchSheet): SideSheet 
 }
 
 function noteBlastoff(save: Save, homeId: string, awayId: string, hg: number, ag: number, forced?: boolean) {
-  const top = Math.max(hg, ag);
-  const bot = Math.min(hg, ag);
-  const yes = forced === true || (forced === undefined && top >= 5 && bot <= 1 && take(save) < 0.42);
-  if (!yes) return false;
+  if (forced !== true || hg === ag) return false;
   const club = clubById(save, hg > ag ? homeId : awayId);
   if (club) club.blastoffs += 1;
   return true;
@@ -2147,12 +2580,12 @@ function around(rng: Rng, mean: number, spread: number) {
 
 function makeDummySkater(): LeaguePlayer {
   const ratings: SkaterRatings = { speed: 1, agility: 1, shot: 1, attack: 1, defense: 1, handling: 1, toughness: 1 };
-  return { id: "", name: "", kind: "skater", ratings, overall: 0, styles: { aggressive: 0, shooter: 0, wide: 0, physical: 0 }, perks: [], hue: 0, visor: 0, antenna: 0, seasonsPlayed: 0, history: [], season: emptyForm(), awards: [], retired: false };
+  return { id: "", name: "", kind: "skater", ratings, overall: 0, styles: { aggressive: 0, shooter: 0, wide: 0, physical: 0 }, perks: [], hue: 0, visor: 0, antenna: 0, seasonsPlayed: 0, history: [], season: emptyForm(), awards: [], retired: false, planet: "", potential: { ...ratings }, prior: null };
 }
 
 function makeDummyGoalie(): LeaguePlayer {
   const ratings: GoalieRatings = { speed: 1, agility: 1, iq: 1, rebound: 1, composure: 1, poke: 1 };
-  return { id: "", name: "", kind: "goalie", ratings, overall: 0, styles: { aggressive: 0, shooter: 0, wide: 0, physical: 0 }, perks: [], hue: 0, visor: 0, antenna: 0, seasonsPlayed: 0, history: [], season: emptyForm(), awards: [], retired: false };
+  return { id: "", name: "", kind: "goalie", ratings, overall: 0, styles: { aggressive: 0, shooter: 0, wide: 0, physical: 0 }, perks: [], hue: 0, visor: 0, antenna: 0, seasonsPlayed: 0, history: [], season: emptyForm(), awards: [], retired: false, planet: "", potential: { ...ratings }, prior: null };
 }
 
 function cleanName(name: string) {

@@ -1,10 +1,14 @@
 import { useState } from "react";
+import { PlayerMark, ratingColor, skillGlow } from "@/components/PlayerMark";
 import { TeamLogo } from "@/components/TeamLogo";
 import {
   clubById,
+  clubGrades,
+  clubPrestige,
   clubLeaders,
   fixturesFor,
   formatPct,
+  knockSeed,
   knockoutFor,
   leagueName,
   playerById,
@@ -17,22 +21,26 @@ import {
   type SeasonForm,
 } from "@/game/league";
 import type { GoalieRatings, Matchup, PlayerCard, SkaterRatings } from "@/game/roster";
+import { kitPaint } from "@/game/roster";
 
-export function RatingBars({ kind, ratings }: { kind: "skater" | "goalie"; ratings: SkaterRatings | GoalieRatings }) {
+export { ratingColor, skillGlow };
+
+export function RatingBars({ kind, ratings, compact = false }: { kind: "skater" | "goalie"; ratings: SkaterRatings | GoalieRatings; compact?: boolean }) {
   const keys = kind === "goalie"
     ? [["speed", "SP"], ["agility", "AG"], ["iq", "IQ"], ["rebound", "RB"], ["composure", "CM"], ["poke", "PK"]]
     : [["speed", "SP"], ["agility", "AG"], ["shot", "SH"], ["attack", "AT"], ["defense", "DF"], ["handling", "HN"], ["toughness", "TG"]];
   return (
-    <span className="mt-1.5 flex items-end gap-1">
+    <span className={`flex items-end ${compact ? "mt-1.5 gap-1" : "mt-2 gap-1.5"}`}>
       {keys.map(([key, label]) => {
         const value = (ratings as unknown as Record<string, number>)[key] ?? 0;
-        const color = value >= 8 ? "#ffe36b" : value >= 5 ? "#8fd4ff" : "#6e8498";
+        const color = ratingColor(value);
         return (
-          <span key={key} className="flex w-4 flex-col items-center gap-0.5" title={`${label} ${value}`}>
-            <span className="flex h-7 w-1.5 items-end overflow-hidden rounded-full bg-white/10">
+          <span key={key} className={`flex flex-col items-center ${compact ? "w-6 gap-0.5" : "w-8 gap-1"}`} title={`${label} ${value}`}>
+            <span className={`font-black leading-none ${compact ? "text-[11px]" : "text-sm"}`} style={{ color }}>{value}</span>
+            <span className={`flex items-end overflow-hidden rounded-full bg-black/40 ${compact ? "h-8 w-2" : "h-16 w-3"}`}>
               <span className="block w-full rounded-full" style={{ height: `${(value / 11) * 100}%`, background: color }} />
             </span>
-            <span className="text-[8px] font-semibold tracking-wide text-[#8fb0c8]">{label}</span>
+            <span className={`font-bold tracking-wide text-[#b7d4e8] ${compact ? "text-[9px]" : "text-[11px]"}`}>{label}</span>
           </span>
         );
       })}
@@ -48,7 +56,10 @@ export function TeamLeaders({ save, clubId, onOpen }: { save: Save; clubId: stri
       {leaders.map((row) => (
         <button key={row.key} type="button" onClick={() => onOpen(row.playerId)} className="rounded-xl border border-white/10 bg-[#10192a] px-2.5 py-1.5 text-left">
           <span className="block text-[10px] font-semibold tracking-wide text-[#8fb0c8]">{row.label}</span>
-          <span className="block truncate text-sm font-semibold text-white">{row.name}</span>
+          <span className="mt-1 flex items-center gap-1.5">
+            <PlayerMark name={row.name} kit={clubById(save, clubId)?.kit} size={22} />
+            <span className="min-w-0 truncate text-sm font-semibold text-white">{row.name}</span>
+          </span>
           <span className="text-sm font-black text-[#ffe36b]">{row.value}</span>
         </button>
       ))}
@@ -96,7 +107,7 @@ export function HubPanel({
         </section>
       ) : null}
       {report && home && away ? (
-        <section className="overflow-hidden rounded-3xl border border-white/10 bg-[#10182a]">
+        <section className="overflow-hidden rounded-3xl border border-[#ffe36b]/40 bg-[#10182a]/80 shadow-2xl backdrop-blur-md">
           <div className="flex items-center justify-between bg-[#0c1424] px-4 py-2 text-[11px] font-semibold tracking-[0.16em] text-[#8fd4ff]">
             <span>FINAL · {report.label.toUpperCase()}</span>
             {report.box.blastoff ? <span className="text-[#ffe36b]">BLASTOFF</span> : <span>BOX SCORE</span>}
@@ -138,7 +149,7 @@ export function HubPanel({
             </>
           ) : market ? (
             <>
-              <h2 className="text-2xl font-black text-white">{save.phase === "sign" ? "Build the roster" : "The market is open"}</h2>
+              <h2 className="display text-4xl text-white">{save.phase === "sign" ? "Build the roster" : "The market is open"}</h2>
               <p className="mt-1 text-sm text-[#9eb6cc]">{problem ?? "The roster fits the purse."}</p>
               <p className="mt-2 text-xs text-[#8fb0c8]">{me?.budgetNote}</p>
               <button type="button" disabled={!!problem} onClick={onBegin} className="mt-4 rounded-2xl bg-[#ffe36b] px-4 py-3 text-sm font-black text-[#1a1404] disabled:opacity-40">
@@ -147,7 +158,7 @@ export function HubPanel({
             </>
           ) : (
             <>
-              <h2 className="text-2xl font-black text-white">{idleCopy(save)}</h2>
+              <h2 className="display text-4xl text-white">{idleCopy(save)}</h2>
               <button type="button" onClick={onContinue} className="mt-4 rounded-2xl bg-[#ffe36b] px-4 py-3 text-sm font-black text-[#1a1404]">
                 Continue
               </button>
@@ -157,8 +168,8 @@ export function HubPanel({
       </section>
       <RoundStrip save={save} />
       {save.news.length ? (
-        <section className="rounded-2xl border border-white/10 bg-[#0c1424] p-4">
-          <h2 className="mb-2 text-[11px] font-bold tracking-[0.16em] text-[#8fd4ff]">WIRE</h2>
+        <section className="glass rounded-2xl p-4">
+          <h2 className="display mb-3 text-xl text-[#8fd4ff]">Wire</h2>
           <ul className="grid gap-2">
             {save.news.slice(0, 6).map((line, index) => (
               <li key={`${index}-${line}`} className="border-l-2 border-[#ffe36b]/70 pl-3 text-sm text-[#d5e8ff]">
@@ -199,8 +210,8 @@ function RoundStrip({ save }: { save: Save }) {
   const mates = fixturesFor(save, last.tier).filter((fixture) => fixture.round === last.round && fixture.hg !== null && fixture.id !== last.id);
   if (!mates.length) return null;
   return (
-    <section className="rounded-2xl border border-white/10 bg-[#0c1424] p-3">
-      <h2 className="mb-2 text-[11px] font-bold tracking-[0.16em] text-[#8fd4ff]">REST OF ROUND {last.round + 1}</h2>
+    <section className="glass rounded-2xl p-3">
+      <h2 className="display mb-2 text-lg text-[#8fd4ff]">Rest of round {last.round + 1}</h2>
       <div className="grid gap-1">
         {mates.map((fixture) => (
           <FixtureRow key={fixture.id} save={save} homeId={fixture.homeId} awayId={fixture.awayId} hg={fixture.hg} ag={fixture.ag} box={fixture.box} mine={false} />
@@ -214,8 +225,8 @@ export function FixtureBoard({ save, tier, me }: { save: Save; tier: number; me:
   const fixtures = fixturesFor(save, tier);
   const rounds = [...new Set(fixtures.map((fixture) => fixture.round))];
   return (
-    <section className="rounded-2xl border border-white/10 bg-[#0c1424] p-3">
-      <h2 className="mb-2 text-sm font-bold text-[#d5e8ff]">{leagueName(tier)}</h2>
+    <section className="glass rounded-2xl p-4">
+      <h2 className="display mb-3 text-2xl text-white">{leagueName(tier)}</h2>
       <div className="grid gap-3">
         {rounds.map((round) => (
           <div key={round}>
@@ -268,10 +279,12 @@ export function BracketBoard({
   title,
   matches,
   save,
+  onClub,
 }: {
   title: string;
   matches: ReturnType<typeof knockoutFor>;
   save: Save;
+  onClub?: (id: string) => void;
 }) {
   const rows = matches.filter((match) => match.homeId || match.awayId || match.homeFrom);
   const [open, setOpen] = useState<string | null>(null);
@@ -279,34 +292,35 @@ export function BracketBoard({
   const rounds = [...new Set(rows.map((match) => match.round))].sort((a, b) => a - b);
   const picked = rows.find((match) => match.id === open);
   return (
-    <section className="rounded-2xl border border-white/10 bg-[#0c1424] p-3">
-      <h2 className="mb-2 text-sm font-bold text-[#d5e8ff]">{title}</h2>
-      <div className="flex gap-3 overflow-x-auto pb-2">
+    <section className="glass rounded-2xl p-4">
+      <h2 className="display mb-3 text-2xl text-white">{title}</h2>
+      <div className="flex gap-4 overflow-x-auto pb-2">
         {rounds.map((round) => (
-          <div key={round} className="grid min-w-[16rem] content-around gap-2">
-            <p className="text-[10px] font-semibold tracking-[0.14em] text-[#8fb0c8]">{roundTitle(rows[0]?.competition ?? "playoff", round)}</p>
+          <div key={round} className="grid min-w-[18rem] content-around gap-3">
+            <p className="display text-sm tracking-[0.16em] text-[#8fd4ff]">{roundTitle(rows[0]?.competition ?? "playoff", round)}</p>
             {rows.filter((match) => match.round === round).map((match) => {
               const home = clubById(save, match.homeId);
               const away = clubById(save, match.awayId);
               const played = match.hg !== null && match.ag !== null;
+              const homeWin = played && match.hg! > match.ag!;
               return (
-                <button
-                  key={match.id}
-                  type="button"
-                  disabled={!played}
-                  onClick={() => setOpen(open === match.id ? null : match.id)}
-                  className={`rounded-xl border px-2 py-2 text-left ${open === match.id ? "border-[#ffe36b]" : "border-white/10"} ${played ? "" : "opacity-70"}`}
-                >
-                  <BracketSide club={home} score={match.hg} win={played && match.hg! > match.ag!} />
-                  <BracketSide club={away} score={match.ag} win={played && match.ag! > match.hg!} />
-                </button>
+                <div key={match.id} className={`glass-row overflow-hidden rounded-xl ${open === match.id ? "ring-2 ring-[#ffe36b]" : ""} ${played ? "" : "opacity-80"}`}>
+                  <BracketSide save={save} match={match} side="home" club={home} score={match.hg} win={homeWin} onClub={onClub} />
+                  <div className="mx-3 h-px bg-white/10" />
+                  <BracketSide save={save} match={match} side="away" club={away} score={match.ag} win={played && !homeWin} onClub={onClub} />
+                  {played ? (
+                    <button type="button" onClick={() => setOpen(open === match.id ? null : match.id)} className="display w-full border-t border-white/10 px-3 py-1.5 text-left text-xs tracking-[0.14em] text-[#8fd4ff]">
+                      {open === match.id ? "Hide box" : "Box score"}
+                    </button>
+                  ) : null}
+                </div>
               );
             })}
           </div>
         ))}
       </div>
       {picked?.box && picked.hg !== null ? (
-        <div className="mt-2">
+        <div className="mt-3">
           <BoxBoard save={save} homeId={picked.homeId} awayId={picked.awayId} box={picked.box} />
         </div>
       ) : null}
@@ -314,13 +328,51 @@ export function BracketBoard({
   );
 }
 
-function BracketSide({ club, score, win }: { club: ReturnType<typeof clubById>; score: number | null; win: boolean }) {
+function BracketSide({
+  save,
+  match,
+  side,
+  club,
+  score,
+  win,
+  onClub,
+}: {
+  save: Save;
+  match: ReturnType<typeof knockoutFor>[number];
+  side: "home" | "away";
+  club: ReturnType<typeof clubById>;
+  score: number | null;
+  win: boolean;
+  onClub?: (id: string) => void;
+}) {
+  const grades = club ? clubGrades(save, club.id) : null;
+  const stripe = club ? kitPaint(club.kit, "primary", 70, 52) : "transparent";
+  const seed = knockSeed(save, match, side);
   return (
-    <span className={`flex items-center gap-2 py-0.5 text-sm ${win ? "font-black text-white" : "text-[#9eb6cc]"}`}>
-      {club ? <TeamLogo kit={club.kit} size={18} /> : <span className="inline-block h-[18px] w-[18px]" />}
-      <span className="min-w-0 flex-1 truncate">{club?.name ?? "Waiting"}</span>
-      <span className="w-4 text-right">{score === null ? "" : score}</span>
-    </span>
+    <div className="flex items-center gap-2 px-2 py-2" style={{ boxShadow: win ? `inset 4px 0 0 ${stripe}` : undefined }}>
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[#10192a] text-sm font-black text-[#ffe36b] ring-1 ring-[#ffe36b]/50">
+        {seed || "–"}
+      </span>
+      {club ? <TeamLogo kit={club.kit} size={32} /> : <span className="inline-block h-8 w-8 rounded-full border border-dashed border-white/20" />}
+      <button
+        type="button"
+        disabled={!club}
+        onClick={() => club && onClub?.(club.id)}
+        className="min-w-0 flex-1 text-left disabled:cursor-default"
+      >
+        <span className={`block truncate text-lg leading-tight ${win ? "font-black text-white" : "font-semibold text-[#d5e8ff]"}`}>{club?.name ?? "Waiting"}</span>
+        {grades ? (
+          <span className="mt-0.5 block text-sm text-[#9eb6cc]">
+            <span className="font-black text-[#ffe36b]">{grades.overall}</span> OVR
+            <span className="mx-1.5 text-white/20">|</span>
+            <span className="font-black text-[#d7c6ff]">{clubPrestige(save, club!.id)}</span> PST
+          </span>
+        ) : (
+          <span className="block text-sm text-[#6e8498]">{club ? "No rating" : "Bracket filling"}</span>
+        )}
+      </button>
+      <span className={`w-8 text-right text-3xl font-black leading-none ${win ? "text-[#ffe36b]" : "text-white/80"}`}>{score === null ? "" : score}</span>
+    </div>
   );
 }
 
